@@ -307,6 +307,9 @@ class StarCraft2Env(MultiAgentEnv):
         self.max_reward = (
             self.n_enemies * self.reward_death_value + self.reward_win
         )
+        self.max_enemy_reward = (
+            self.n_agents * self.reward_death_value + self.reward_win
+        )
         
         self.ally_state_attr_names = [
             "health",
@@ -326,6 +329,10 @@ class StarCraft2Env(MultiAgentEnv):
         self.battles_game = 0
         self.timeouts = 0
         self.force_restarts = 0
+        self.enemy_battles_won = 0
+        self.enemy_battles_game = 0
+        self.enemy_timeouts = 0
+        self.enemy_force_restarts = 0
         self.last_stats = None
         self.death_tracker_ally = np.zeros(self.n_agents, dtype=np.float32)
         self.death_tracker_enemy = np.zeros(self.n_enemies, dtype=np.float32)
@@ -516,6 +523,7 @@ class StarCraft2Env(MultiAgentEnv):
         self.previous_ally_units = None
         self.previous_enemy_units = None
         self.win_counted = False
+        self.enemy_win_counted = False
         self.defeat_counted = False
 
         self.last_action = np.zeros((self.n_agents, self.n_actions), dtype=np.float32)
@@ -598,7 +606,9 @@ class StarCraft2Env(MultiAgentEnv):
         terminated = False
         bad_transition = False
         infos = [{} for i in range(self.n_agents)]
+        enemy_infos = [{} for i in range(self.n_enemies)]
         dones = np.zeros((self.n_agents), dtype=bool)
+        enemy_dones = np.zeros((self.n_enemies), dtype=bool)
 
         actions_agents_int = [int(a) for a in actions_agents]
         actions_enemy_int = [int(a) for a in actions_enemy]
@@ -676,6 +686,22 @@ class StarCraft2Env(MultiAgentEnv):
                         dones[i] = False
             for i in range(self.n_enemies):
                 available_enemy_actions.append(self.get_avail_enemy_actions(i))
+                enemy_infos[i] = {
+                    "battles_won": self.enemy_battles_won,
+                    "battles_game": self.enemy_battles_game,
+                    "battles_draw": self.enemy_timeouts,
+                    "restarts": self.enemy_force_restarts,
+                    "bad_transition": bad_transition,
+                    "won": self.enemy_win_counted
+                    
+                }
+                if terminated:
+                    enemy_dones[i] = True
+                else:
+                    if self.death_tracker_enemy[i]:
+                        enemy_dones[i] = True
+                    else:
+                        enemy_dones[i] = False
 
             if self.use_state_agent:
                 agent_global_state = [self.get_state_agent(agent_id) for agent_id in range(self.n_agents)]
@@ -706,7 +732,9 @@ class StarCraft2Env(MultiAgentEnv):
             #     if self.use_influence_map_critic:
             #         global_state = local_obs
 
-            return local_obs, enemy_obs, agent_global_state, enemy_global_state, [[0]]*self.n_agents, dones, infos, available_actions, available_enemy_actions
+            return local_obs, enemy_obs, agent_global_state, enemy_global_state, \
+                   [[0]]*self.n_agents, [[0]]*self.n_enemies, dones, enemy_dones, \
+                    infos, enemy_infos, available_actions, available_enemy_actions
 
         self._total_steps += 1
         self._episode_steps += 1
@@ -714,7 +742,7 @@ class StarCraft2Env(MultiAgentEnv):
         # Update units
         game_end_code = self.update_units()
 
-        reward = self.reward_battle()
+        reward, reward_enemy = self.reward_battle()
 
         available_actions = []
         for i in range(self.n_agents):
@@ -733,13 +761,18 @@ class StarCraft2Env(MultiAgentEnv):
                 self.win_counted = True
                 if not self.reward_sparse:
                     reward += self.reward_win
+                    reward_enemy += self.reward_defeat
                 else:
                     reward = 1
+                    reward_enemy = -1
             elif game_end_code == -1 and not self.defeat_counted:
+                self.enemy_battles_won += 1
                 self.defeat_counted = True
                 if not self.reward_sparse:
+                    reward_enemy += self.reward_win
                     reward += self.reward_defeat
                 else:
+                    reward_enemy = 1
                     reward = -1
 
         elif self._episode_steps >= self.episode_limit:
@@ -748,6 +781,7 @@ class StarCraft2Env(MultiAgentEnv):
             self.bad_transition = True
             if self.continuing_episode:
                 infos["episode_limit"] = True
+                enemy_infos["episode_limit"] = True
             self.battles_game += 1
             self.timeouts += 1
 
@@ -768,6 +802,24 @@ class StarCraft2Env(MultiAgentEnv):
                     dones[i] = True
                 else:
                     dones[i] = False
+                    
+        for i in range(self.n_enemies):
+            enemy_infos[i] = {
+                "battles_won": self.enemy_battles_won,
+                "battles_game": self.enemy_battles_game,
+                "battles_draw": self.enemy_timeouts,
+                "restarts": self.enemy_force_restarts,
+                "bad_transition": bad_transition,
+                "won": self.enemy_win_counted
+            }
+
+            if terminated:
+                enemy_dones[i] = True
+            else:
+                if self.death_tracker_enemy[i]:
+                    enemy_dones[i] = True
+                else:
+                    enemy_dones[i] = False
 
         if self.debug:
             logging.debug("Reward = {}".format(reward).center(60, '-'))
@@ -777,8 +829,10 @@ class StarCraft2Env(MultiAgentEnv):
 
         if self.reward_scale:
             reward /= self.max_reward / self.reward_scale_rate
+            reward_enemy /= self.max_enemy_reward / self.reward_scale_rate
 
         rewards = [[reward]]*self.n_agents
+        enemy_rewards = [[reward_enemy]]*self.n_enemies
 
         if self.use_state_agent:
             global_state = [self.get_state_agent(agent_id) for agent_id in range(self.n_agents)]
@@ -808,7 +862,8 @@ class StarCraft2Env(MultiAgentEnv):
         #     if self.use_influence_map_critic:
         #         global_state = local_obs
 
-        return local_obs, enemy_obs, global_state, enemy_global_state, rewards, dones, infos, available_actions, available_enemy_actions
+        return local_obs, enemy_obs, global_state, enemy_global_state, rewards, enemy_rewards, \
+               dones, enemy_dones, infos, enemy_infos, available_actions, available_enemy_actions
 
     def get_agent_action(self, a_id, action):
         """Construct the action for agent a_id."""
@@ -1239,9 +1294,15 @@ class StarCraft2Env(MultiAgentEnv):
             return 0
 
         reward = 0
+        reward_enemy = 0
         delta_deaths = 0
         delta_ally = 0
         delta_enemy = 0
+        # Make variables for enemy reward calculation
+        delta_deaths_enemy = 0
+        delta_ally_enemy = 0
+        delta_enemy_enemy = 0
+        
 
         neg_scale = self.reward_negative_scale
 
@@ -1261,6 +1322,7 @@ class StarCraft2Env(MultiAgentEnv):
                     delta_ally += prev_health * neg_scale
                 else:
                     # still alive
+                    delta_enemy_enemy += prev_health - al_unit.health - al_unit.shield
                     delta_ally += neg_scale * (
                         prev_health - al_unit.health - al_unit.shield
                     )
@@ -1275,15 +1337,25 @@ class StarCraft2Env(MultiAgentEnv):
                     self.death_tracker_enemy[e_id] = 1
                     delta_deaths += self.reward_death_value
                     delta_enemy += prev_health
+                    
+                    if not self.reward_only_positive:
+                        delta_deaths_enemy -= self.reward_death_value * neg_scale
+                    delta_ally_enemy += prev_health * neg_scale
                 else:
                     delta_enemy += prev_health - e_unit.health - e_unit.shield
+                    delta_ally_enemy += neg_scale * (
+                        prev_health - e_unit.health - e_unit.shield
+                    )
 
         if self.reward_only_positive:
             reward = abs(delta_enemy + delta_deaths)  # shield regeneration
+            reward_enemy = abs(delta_enemy_enemy + delta_deaths_enemy)
+            
         else:
             reward = delta_enemy + delta_deaths - delta_ally
+            reward_enemy = delta_enemy_enemy + delta_deaths_enemy - delta_ally_enemy
 
-        return reward
+        return reward, reward_enemy
 
     def get_total_actions(self):
         """Returns the total number of actions an agent could ever take."""
@@ -2914,6 +2986,11 @@ class StarCraft2Env(MultiAgentEnv):
                     self.enemies[len(self.enemies)] = unit
                     if self._episode_count == 0:
                         self.max_reward += unit.health_max + unit.shield_max
+                        
+                if unit.owner == self.agent_team:
+                    
+                    if self._episode_count == 0:
+                        self.max_enemy_reward += unit.health_max + unit.shield_max
 
             if self._episode_count == 0:
                 min_unit_type = min(
