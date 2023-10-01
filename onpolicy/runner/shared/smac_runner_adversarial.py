@@ -53,6 +53,10 @@ class SMACRunner(Runner):
         last_battles_game = np.zeros(self.n_rollout_threads, dtype=np.float32)
         last_battles_won = np.zeros(self.n_rollout_threads, dtype=np.float32)
         
+        
+        enemy_last_battles_game = np.zeros(self.n_rollout_threads, dtype=np.float32)
+        enemy_last_battles_won = np.zeros(self.n_rollout_threads, dtype=np.float32)
+        
         self.guide_index = 0
 
         for episode in range(episodes):
@@ -80,6 +84,7 @@ class SMACRunner(Runner):
                 #     explore_values, explore_actions, explore_action_log_probs, explore_rnn_states, explore_rnn_states_critic = self.collect(step)
                 # else:
                 values, actions, action_log_probs, rnn_states, rnn_states_critic = self.collect(step)
+                enemy_values, enemy_actions, enemy_action_log_probs, enemy_rnn_states, enemy_rnn_states_critic = self.collect_enemy(step)
                 
 
                 # for i in range(self.n_rollout_threads):
@@ -92,10 +97,10 @@ class SMACRunner(Runner):
 
                 # Obser reward and next obs
                 # enemy_actions = None
-                if self.multi_player:
-                    enemy_values, enemy_actions, enemy_action_log_probs, enemy_rnn_states, enemy_rnn_states_critic = self.collect_enemy(step)
+                # if self.multi_player:
+                #     enemy_values, enemy_actions, enemy_action_log_probs, enemy_rnn_states, enemy_rnn_states_critic = self.collect_enemy(step)
                     # enemy_actions, enemy_rnn_states = self.collect_enemy(self.enemy_obs,self.enemy_rnn_states,self.buffer2.masks[step],self.available_enemy_actions)
-                obs, enemy_obs, agent_state, enemy_state, rewards, dones, infos, available_actions, available_enemy_actions = self.envs.step(actions,enemy_actions) if self.multi_player else self.envs.step(actions)
+                obs, enemy_obs, agent_state, enemy_state, rewards, enemy_rewards, dones, enemy_dones, infos, enemy_infos, available_actions, available_enemy_actions = self.envs.step(actions,enemy_actions) if self.multi_player else self.envs.step(actions)
                 if self.multi_player:
                     self.available_enemy_actions = available_enemy_actions.copy()
                     self.enemy_rnn_states = enemy_rnn_states.copy()
@@ -128,7 +133,7 @@ class SMACRunner(Runner):
 
 
                 data = obs, enemy_obs, agent_state, enemy_state, rewards, enemy_rewards, \
-                       dones, infos, available_actions, available_enemy_actions, \
+                       dones, enemy_dones, infos, enemy_infos, available_actions, available_enemy_actions, \
                        values, enemy_values, actions, enemy_actions, action_log_probs, enemy_action_log_probs, \
                        rnn_states, enemy_rnn_states, rnn_states_critic, enemy_rnn_states_critic 
 
@@ -138,7 +143,7 @@ class SMACRunner(Runner):
 
             # compute return and update network
             self.compute()
-            train_infos = self.train()
+            agent_train_infos, enemy_train_infos = self.train()
             
             # post process
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads           
@@ -163,7 +168,29 @@ class SMACRunner(Runner):
                     battles_won = []
                     battles_game = []
                     incre_battles_won = []
-                    incre_battles_game = []                    
+                    incre_battles_game = []        
+                    
+                    enemy_battles_won = []
+                    enemy_battles_game = []
+                    enemy_incre_battles_won = []
+                    enemy_incre_battles_game = []                
+
+                    for i, info in enumerate(enemy_infos):
+                        if 'battles_won' in info[0].keys():
+                            enemy_battles_won.append(info[0]['battles_won'])
+                            enemy_incre_battles_won.append(info[0]['battles_won']-enemy_last_battles_won[i])
+                        if 'battles_game' in info[0].keys():
+                            enemy_battles_game.append(info[0]['battles_game'])
+                            enemy_incre_battles_game.append(info[0]['battles_game']-enemy_last_battles_game[i])
+
+                    enemy_incre_win_rate = np.sum(enemy_incre_battles_won)/np.sum(enemy_incre_battles_game) if np.sum(enemy_incre_battles_game)>0 else 0.0
+                    print("incre win rate is {}.".format(enemy_incre_win_rate))
+                    if self.use_wandb:
+                        wandb.log({"enemy_incre_win_rate": enemy_incre_win_rate}, step=total_num_steps)
+                        wandb.log({"enemy_guide_window": self.jsrl_guide_windows[0][0]}, step=total_num_steps)
+                    else:
+                        self.writter.add_scalars("incre_win_rate", {"incre_win_rate": incre_win_rate}, total_num_steps)
+
 
                     for i, info in enumerate(infos):
                         if 'battles_won' in info[0].keys():
@@ -176,17 +203,21 @@ class SMACRunner(Runner):
                     incre_win_rate = np.sum(incre_battles_won)/np.sum(incre_battles_game) if np.sum(incre_battles_game)>0 else 0.0
                     print("incre win rate is {}.".format(incre_win_rate))
                     if self.use_wandb:
-                        wandb.log({"incre_win_rate": incre_win_rate}, step=total_num_steps)
-                        wandb.log({"guide_window": self.jsrl_guide_windows[0][0]}, step=total_num_steps)
+                        wandb.log({"agent_incre_win_rate": incre_win_rate}, step=total_num_steps)
+                        wandb.log({"agent_guide_window": self.jsrl_guide_windows[0][0]}, step=total_num_steps)
                     else:
-                        self.writter.add_scalars("incre_win_rate", {"incre_win_rate": incre_win_rate}, total_num_steps)
+                        self.writter.add_scalars("agent_incre_win_rate", {"agent_incre_win_rate": incre_win_rate}, total_num_steps)
                     
                     last_battles_game = battles_game
                     last_battles_won = battles_won
+                    
+                    enemy_last_battles_game = battles_game
+                    enemy_last_battles_won = battles_won
 
-                train_infos['dead_ratio'] = 1 - self.buffer1.active_masks.sum() / reduce(lambda x, y: x*y, list(self.buffer1.active_masks.shape)) 
+                agent_train_infos['dead_ratio'] = 1 - self.buffer1.active_masks.sum() / reduce(lambda x, y: x*y, list(self.buffer1.active_masks.shape)) 
+                enemy_train_infos['dead_ratio'] = 1 - self.buffer2.active_masks.sum() / reduce(lambda x, y: x*y, list(self.buffer2.active_masks.shape)) 
                 
-                self.log_train(train_infos, total_num_steps)
+                self.log_train(agent_train_infos, enemy_train_infos, total_num_steps)
 
             # If we make it through some number of episodes, just adjust guide window anyway
             # if (self.all_args.jump_start_model_dir or self.all_args.jump_start_model_pool_dir) and self.episodes_since_guide_window_reduction >= self.episode_threshold:
@@ -197,8 +228,9 @@ class SMACRunner(Runner):
                 self.episodes_since_guide_window_reduction = -1
 
             # eval
-            if episode % self.eval_interval == 0 and self.use_eval:
-                self.eval(total_num_steps)
+            # if episode % self.eval_interval == 0 and self.use_eval:
+                # rewrite evaluate function to work with evaluating against benchmark model
+                # self.eval(total_num_steps)
                 #self.eval_envs.envs[0].save_replay()
 
             self.episodes_since_guide_window_reduction += 1
@@ -210,11 +242,13 @@ class SMACRunner(Runner):
         # replay buffer
         if not self.use_centralized_V:
             agent_state = obs
+            enemy_state = opp_obs
 
         self.buffer1.share_obs[0] = agent_state.copy()
         self.buffer1.obs[0] = obs.copy()
         self.buffer1.available_actions[0] = available_actions.copy()
         
+        # print("warmup shape: ", np.shape(enemy_state))
         self.buffer2.share_obs[0] = enemy_state.copy()
         self.buffer2.obs[0] = opp_obs.copy()
         self.buffer2.available_actions[0] = avail_enemy_actions.copy()
@@ -281,7 +315,7 @@ class SMACRunner(Runner):
         return values, actions, action_log_probs, rnn_states, rnn_states_critic
 
     def insert(self, data):
-        obs, opp_obs, agent_state, enemy_state, rewards, enemy_rewards, dones, infos, available_actions, enemy_avail_actions, \
+        obs, opp_obs, agent_state, enemy_state, rewards, enemy_rewards, dones, enemy_dones, infos, enemy_infos, available_actions, enemy_avail_actions, \
         values, enemy_values, actions, enemy_actions, action_log_probs, enemy_action_log_probs, rnn_states, enemy_rnn_states, \
         rnn_states_critic, enemy_rnn_states_critic = data
 
@@ -306,7 +340,7 @@ class SMACRunner(Runner):
                            actions, action_log_probs, values, rewards, masks, bad_masks, active_masks, available_actions)
         
         # Insert data to buffer for opposing model
-        enemy_dones_env = np.all(dones, axis=1)
+        enemy_dones_env = np.all(enemy_dones, axis=1)
         
         enemy_rnn_states[enemy_dones_env == True] = np.zeros(((enemy_dones_env == True).sum(), self.num_enemies, self.recurrent_N, self.hidden_size), dtype=np.float32)
         enemy_rnn_states_critic[enemy_dones_env == True] = np.zeros(((enemy_dones_env == True).sum(), self.num_enemies, *self.buffer2.rnn_states_critic.shape[3:]), dtype=np.float32)
@@ -315,30 +349,43 @@ class SMACRunner(Runner):
         enemy_masks[enemy_dones_env == True] = np.zeros(((enemy_dones_env == True).sum(), self.num_enemies, 1), dtype=np.float32)
 
         enemy_active_masks = np.ones((self.n_rollout_threads, self.num_enemies, 1), dtype=np.float32)
-        enemy_active_masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
+        enemy_active_masks[enemy_dones == True] = np.zeros(((enemy_dones == True).sum(), 1), dtype=np.float32)
         enemy_active_masks[enemy_dones_env == True] = np.ones(((enemy_dones_env == True).sum(), self.num_enemies, 1), dtype=np.float32)
 
-        enemy_bad_masks = np.array([[[0.0] if info[enemy_id]['bad_transition'] else [1.0] for enemy_id in range(self.num_enemies)] for info in infos])
+        enemy_bad_masks = np.array([[[0.0] if info[enemy_id]['bad_transition'] else [1.0] for enemy_id in range(self.num_enemies)] for info in enemy_infos])
         
         if not self.use_centralized_V:
-            enemy_state = obs
+            enemy_state = opp_obs
 
+        # print("buffer size: ", np.shape(enemy_state))
+        
         self.buffer2.insert(enemy_state, opp_obs, enemy_rnn_states, enemy_rnn_states_critic,
                            enemy_actions, enemy_action_log_probs, enemy_values, enemy_rewards, 
                            enemy_masks, enemy_bad_masks, enemy_active_masks, enemy_avail_actions)
         
 
-    def log_train(self, train_infos, total_num_steps):
-        train_infos["average_step_rewards"] = np.mean(self.buffer1.rewards)
+    def log_train(self, agent_train_infos, enemy_train_infos, total_num_steps):
+        agent_train_infos["average_step_rewards"] = np.mean(self.buffer1.rewards)
+        enemy_train_infos["average_step_rewards"] = np.mean(self.buffer2.rewards)
         info_we_want_to_keep = ['average_step_rewards', 'dead_ratio']
-        for k, v in train_infos.items():
+        
+        for k, v in agent_train_infos.items():
             if k not in info_we_want_to_keep:
                 continue # Skip info we don't care about.
 
             if self.use_wandb:
-                wandb.log({k: v}, step=total_num_steps)
+                wandb.log({f"agent_{k}": v}, step=total_num_steps)
             else:
-                self.writter.add_scalars(k, {k: v}, total_num_steps)
+                self.writter.add_scalars(f"agent_{k}", {f"agent_{k}": v}, total_num_steps)
+                
+        for k, v in enemy_train_infos.items():
+            if k not in info_we_want_to_keep:
+                continue # Skip info we don't care about.
+
+            if self.use_wandb:
+                wandb.log({f"enemy_{k}": v}, step=total_num_steps)
+            else:
+                self.writter.add_scalars(f"enemy_{k}", {f"enemy_{k}": v}, total_num_steps)
     
     @torch.no_grad()
     def eval(self, total_num_steps):

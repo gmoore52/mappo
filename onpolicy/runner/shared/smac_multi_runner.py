@@ -3,7 +3,8 @@ import wandb
 import numpy as np
 from functools import reduce
 import torch
-from onpolicy.runner.shared.base_runner import Runner
+from onpolicy.runner.shared.multi_runner import Runner
+import numpy as np
 
 def _t2n(x):
     return x.detach().cpu().numpy()
@@ -97,26 +98,32 @@ class SMACRunner(Runner):
 
     def warmup(self):
         # reset env
-        obs, share_obs, available_actions = self.envs.reset()
+        obs, enemy_obs, share_obs, e_share_obs, available_actions, e_avail_actions = self.envs.reset()
 
         # replay buffer
         if not self.use_centralized_V:
             share_obs = obs
+            e_share_obs = enemy_obs
 
-        self.buffer.share_obs[0] = share_obs.copy()
-        self.buffer.obs[0] = obs.copy()
-        self.buffer.available_actions[0] = available_actions.copy()
+        self.buffer1.share_obs[0] = share_obs.copy()
+        self.buffer1.obs[0] = obs.copy()
+        self.buffer1.available_actions[0] = available_actions.copy()
+        
+        print(np.shape(e_share_obs))
+        self.buffer2.share_obs[0] = e_share_obs.copy()
+        self.buffer2.obs[0] = enemy_obs.copy()
+        self.buffer2.available_actions[0] = e_avail_actions.copy()
 
     @torch.no_grad()
     def collect(self, step):
         self.trainer.prep_rollout()
         value, action, action_log_prob, rnn_state, rnn_state_critic \
-            = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
-                                            np.concatenate(self.buffer.obs[step]),
-                                            np.concatenate(self.buffer.rnn_states[step]),
-                                            np.concatenate(self.buffer.rnn_states_critic[step]),
-                                            np.concatenate(self.buffer.masks[step]),
-                                            np.concatenate(self.buffer.available_actions[step]))
+            = self.trainer.policy.get_actions(np.concatenate(self.buffer1.share_obs[step]),
+                                            np.concatenate(self.buffer1.obs[step]),
+                                            np.concatenate(self.buffer1.rnn_states[step]),
+                                            np.concatenate(self.buffer1.rnn_states_critic[step]),
+                                            np.concatenate(self.buffer1.masks[step]),
+                                            np.concatenate(self.buffer1.available_actions[step]))
         # [self.envs, agents, dim]
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))

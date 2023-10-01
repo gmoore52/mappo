@@ -38,11 +38,15 @@ class ShareVecEnv(ABC):
         'render.modes': ['human', 'rgb_array']
     }
 
-    def __init__(self, num_envs, observation_space, share_observation_space, action_space):
+    def __init__(self, num_envs, observation_space, enemy_observation_space, share_observation_space, enemy_share_observation_space, action_space, enemy_action_space):
         self.num_envs = num_envs
         self.observation_space = observation_space
         self.share_observation_space = share_observation_space
         self.action_space = action_space
+        
+        self.enemy_observation_space = enemy_observation_space
+        self.enemy_share_observation_space = enemy_share_observation_space
+        self.enemy_action_space  = enemy_action_space
 
     @abstractmethod
     def reset(self):
@@ -306,15 +310,15 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
             ob, s_ob, reward, done, info, available_actions = env.step(data)
             if 'bool' in done.__class__.__name__:
                 if done:
-                    ob, s_ob, available_actions = env.reset()
+                    ob, e_ob, s_ob, es_ob, available_actions, e_avail_actions = env.reset()
             else:
                 if np.all(done):
-                    ob, s_ob, available_actions = env.reset()
+                    ob, e_ob, s_ob, es_ob, available_actions, e_avail_actions = env.reset()
 
             remote.send((ob, s_ob, reward, done, info, available_actions))
         elif cmd == 'reset':
-            ob, s_ob, available_actions = env.reset()
-            remote.send((ob, s_ob, available_actions))
+            ob, e_ob, s_ob, es_ob, available_actions, e_avail_actions = env.reset()
+            remote.send((ob, e_ob, s_ob, es_ob, available_actions, e_avail_actions))
         elif cmd == 'reset_task':
             ob = env.reset_task()
             remote.send(ob)
@@ -708,7 +712,8 @@ class ShareDummyVecEnv(ShareVecEnv):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
         ShareVecEnv.__init__(self, len(
-            env_fns), env.observation_space, env.share_observation_space, env.action_space)
+            env_fns), env.observation_space, env.enemy_observation_space, env.share_observation_space, 
+                      env.enemy_share_observation_space, env.action_space, env.enemy_action_space)
         self.actions = None
         self.leftAction = None
         self.rightAction = None
@@ -721,19 +726,21 @@ class ShareDummyVecEnv(ShareVecEnv):
     def step_wait(self):
         results = [env.step(a,b) for (a,b,env) in zip(self.leftAction, self.rightAction, self.envs)]
         # print(len(*results))
-        obs, opp_obs, agent_state, enemy_state, rews, dones, infos, available_actions, avail_enemy_actions = map(
+        obs, opp_obs, agent_state, enemy_state, rews, e_rews, dones, e_dones, \
+        infos, e_infos, available_actions, avail_enemy_actions = map(
             np.array, zip(*results))
-
+        
         for (i, done) in enumerate(dones):
             if 'bool' in done.__class__.__name__:
                 if done:
                     obs[i], opp_obs[i], agent_state[i], enemy_state[i], available_actions[i], avail_enemy_actions[i] = self.envs[i].reset()
             else:
                 if np.all(done):
+                    # print("state_size: ", np.shape(enemy_state))
                     obs[i], opp_obs[i], agent_state[i], enemy_state[i], available_actions[i], avail_enemy_actions[i] = self.envs[i].reset()
         self.actions = None
 
-        return obs, opp_obs, agent_state, enemy_state, rews, dones, infos, available_actions, avail_enemy_actions
+        return obs, opp_obs, agent_state, enemy_state, rews, e_rews, dones, e_dones, infos, e_infos, available_actions, avail_enemy_actions
 
     def reset(self):
         print(self.envs)

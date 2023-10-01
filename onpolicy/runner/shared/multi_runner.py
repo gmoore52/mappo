@@ -68,6 +68,7 @@ class Runner(object):
         from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
 
         share_observation_space = self.envs.share_observation_space[0] if self.use_centralized_V else self.envs.observation_space[0]
+        enemy_share_observation_space = self.envs.enemy_share_observation_space[0] if self.use_centralized_V else self.envs.enemy_observation_space[0]
 
         # policy network
         self.policy1 = Policy(self.all_args,
@@ -77,9 +78,9 @@ class Runner(object):
                             device = self.device)
         
         self.policy2 = Policy(self.all_args,
-                            self.envs.observation_space[0],
-                            share_observation_space,
-                            self.envs.action_space[0],
+                            self.envs.enemy_observation_space[0],
+                            enemy_share_observation_space,
+                            self.envs.enemy_action_space[0],
                             device = self.device)
     
 
@@ -98,11 +99,15 @@ class Runner(object):
                                         self.envs.action_space[0])
         
         # buffer for enemy side
+        # print("obs space: ", np.shape(enemy_share_observation_space), enemy_share_observation_space)
+        # print("obs a space: ", share_observation_space, np.shape(self.buffer1.share_obs))
         self.buffer2 = SharedReplayBuffer(self.all_args,
                                         self.num_enemies,
-                                        self.envs.observation_space[0],
-                                        share_observation_space,
-                                        self.envs.action_space[0])
+                                        self.envs.enemy_observation_space[0],
+                                        enemy_share_observation_space,
+                                        self.envs.enemy_action_space[0])
+        
+        # print("post obs space: ", np.shape(self.buffer2.share_obs))
 
     def run(self):
         """Collect training data, perform training updates, and evaluate policy."""
