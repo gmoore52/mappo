@@ -8,17 +8,7 @@ import numpy as np
 from pathlib import Path
 import torch
 from onpolicy.config import get_config
-from onpolicy.envs.starcraft2.StarCraft2_Env import StarCraft2Env
-from onpolicy.envs.starcraft2.StarCraft2_Env_multiplayer import StarCraft2Env as StarCraft2EnvMPlayer
-from onpolicy.envs.starcraft2.SMACv2_modified import SMACv2 as SMACv2_Mod
-from onpolicy.envs.starcraft2.SMACv2 import SMACv2 as SMACv2_sp
-from onpolicy.envs.starcraft2.SMACv2_multiplayer import SMACv2 as SMACv2_mp
-from onpolicy.envs.starcraft2.smac_maps import get_map_params
-from onpolicy.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv, ShareMultiDummyVecEnv
-from absl import logging
-
-# logging.set_verbosity(logging.DEBUG)
-
+from onpolicy.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv
 
 """Train script for SMAC."""
 
@@ -61,9 +51,17 @@ def make_train_env(all_args):
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "StarCraft2":
-                env = StarCraft2EnvMPlayer(all_args)
+                from onpolicy.envs.starcraft2.StarCraft2_Env import StarCraft2Env
+                env = StarCraft2Env(all_args)
             elif all_args.env_name == "StarCraft2v2":
-                env = SMACv2_mp(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
+                from onpolicy.envs.starcraft2.SMACv2_modified import SMACv2
+                env = SMACv2(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
+            elif all_args.env_name == "SMAC":
+                from onpolicy.envs.starcraft2.SMAC import SMAC
+                env = SMAC(map_name=all_args.map_name)
+            elif all_args.env_name == "SMACv2":
+                from onpolicy.envs.starcraft2.SMACv2 import SMACv2
+                env = SMACv2(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
             else:
                 print("Can not support the " + all_args.env_name + "environment.")
                 raise NotImplementedError
@@ -73,18 +71,26 @@ def make_train_env(all_args):
         return init_env
 
     if all_args.n_rollout_threads == 1:
-        return ShareMultiDummyVecEnv([get_env_fn(0)])
+        return ShareDummyVecEnv([get_env_fn(0)])
     else:
         return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
 def make_eval_env(all_args):
     def get_env_fn(rank):
-        def init_env(): # KEEP THIS ENVIRONMENT AS A BASE ENVIRONMENT AND THE TRAIN ONE AS A MULTIPLAYER ONE
+        def init_env():
             if all_args.env_name == "StarCraft2":
+                from onpolicy.envs.starcraft2.StarCraft2_Env import StarCraft2Env
                 env = StarCraft2Env(all_args)
             elif all_args.env_name == "StarCraft2v2":
-                env = SMACv2_Mod(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
+                from onpolicy.envs.starcraft2.SMACv2_modified import SMACv2
+                env = SMACv2(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
+            elif all_args.env_name == "SMAC":
+                from onpolicy.envs.starcraft2.SMAC import SMAC
+                env = SMAC(map_name=all_args.map_name)
+            elif all_args.env_name == "SMACv2":
+                from onpolicy.envs.starcraft2.SMACv2 import SMACv2
+                env = SMACv2(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
             else:
                 print("Can not support the " + all_args.env_name + "environment.")
                 raise NotImplementedError
@@ -113,7 +119,6 @@ def parse_args(args, parser):
     parser.add_argument("--use_state_agent", action='store_false', default=True)
     parser.add_argument("--use_mustalive", action='store_false', default=True)
     parser.add_argument("--add_center_xy", action='store_false', default=True)
-    parser.add_argument("--jumpstart_model_dir")
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -128,15 +133,26 @@ def main(args):
         print("u are choosing to use rmappo, we set use_recurrent_policy to be True")
         all_args.use_recurrent_policy = True
         all_args.use_naive_recurrent_policy = False
-    elif all_args.algorithm_name == "mappo":
+    elif all_args.algorithm_name == "mappo" or all_args.algorithm_name == "mat" or all_args.algorithm_name == "mat_dec":
+        assert (all_args.use_recurrent_policy == False and all_args.use_naive_recurrent_policy == False), (
+            "check recurrent policy!")
         print("u are choosing to use mappo, we set use_recurrent_policy & use_naive_recurrent_policy to be False")
         all_args.use_recurrent_policy = False 
         all_args.use_naive_recurrent_policy = False
     elif all_args.algorithm_name == "ippo":
         print("u are choosing to use ippo, we set use_centralized_V to be False")
         all_args.use_centralized_V = False
+    elif all_args.algorithm_name == "happo"  or all_args.algorithm_name == "hatrpo":
+        # can or cannot use recurrent network?
+        print("using", all_args.algorithm_name, 'without recurrent network')
+        all_args.use_recurrent_policy = False 
+        all_args.use_naive_recurrent_policy = False
     else:
         raise NotImplementedError
+
+    if all_args.algorithm_name == "mat_dec":
+        all_args.dec_actor = True
+        all_args.share_actor = True
 
     # cuda
     if all_args.cuda and torch.cuda.is_available():
@@ -162,12 +178,14 @@ def main(args):
                          entity=all_args.user_name,
                          notes=socket.gethostname(),
                          name=str(all_args.algorithm_name) + "_" +
-                              str(all_args.experiment_name) +
+                              str(all_args.experiment_name) + "_" + 
+                              str(all_args.units) +
                               "_seed" + str(all_args.seed),
-                         group=all_args.map_name,
+                        #  group=all_args.map_name,
                          dir=str(run_dir),
                          job_type="training",
                          reinit=True)
+        all_args = wandb.config # for wandb sweep
     else:
         if not run_dir.exists():
             curr_run = 'run1'
@@ -194,36 +212,33 @@ def main(args):
     # env
     envs = make_train_env(all_args)
     eval_envs = make_eval_env(all_args) if all_args.use_eval else None
+
     if all_args.env_name == "SMAC":
+        from smac.env.starcraft2.maps import get_map_params
         num_agents = get_map_params(all_args.map_name)["n_agents"]
-        num_enemies = get_map_params(all_args.map_name)["n_enemies"]
-        print('smac map details  == ', get_map_params(all_args.map_name))
     elif all_args.env_name == 'StarCraft2':
+        from onpolicy.envs.starcraft2.smac_maps import get_map_params
         num_agents = get_map_params(all_args.map_name)["n_agents"]
-        num_enemies = get_map_params(all_args.map_name)["n_enemies"]
-        print('smac map details  == ', get_map_params(all_args.map_name))
     elif all_args.env_name == "SMACv2" or all_args.env_name == 'StarCraft2v2':
+        from smacv2.env.starcraft2.maps import get_map_params
         num_agents = parse_smacv2_distribution(all_args)['n_units']
-        num_enemies = parse_smacv2_distribution(all_args)["n_enemies"]
-        print('smac map details  == ', parse_smacv2_distribution(all_args))
-        
-    # num_agents = get_map_params(all_args.map_name)["n_agents"]
-    # num_enemies = get_map_params(all_args.map_name)["n_enemies"]
 
     config = {
         "all_args": all_args,
         "envs": envs,
         "eval_envs": eval_envs,
         "num_agents": num_agents,
-        "num_enemies": num_enemies,
         "device": device,
         "run_dir": run_dir
     }
 
     # run experiments
     if all_args.share_policy:
-        from onpolicy.runner.shared.smac_runner_adversarial import SMACRunner as Runner
+        from onpolicy.runner.shared.smac_runner import SMACRunner as Runner
     else:
+        from onpolicy.runner.separated.smac_runner import SMACRunner as Runner
+
+    if all_args.algorithm_name == "happo" or all_args.algorithm_name == "hatrpo":
         from onpolicy.runner.separated.smac_runner import SMACRunner as Runner
 
     runner = Runner(config)
