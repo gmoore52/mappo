@@ -558,10 +558,12 @@ class StarCraft2Env(MultiAgentEnv):
                 
             joinReqs.append(join)
         
-        
-        self._parallel.run((c.join_game, join)
-                           for c, join in zip(self._controllers, joinReqs))
-            
+        try:
+            self._parallel.run((c.join_game, join)
+                                for c, join in zip(self._controllers, joinReqs))
+        except (protocol.ProtocolError, protocol.ConnectionError):
+            self.full_restart()
+
         game_info = self._parallel.run(c.game_info for c in self._controllers)
         map_info = game_info[0].start_raw
         self.map_play_area_min = map_info.playable_area.p0
@@ -765,6 +767,8 @@ class StarCraft2Env(MultiAgentEnv):
         dones = np.zeros((self.n_agents), dtype=bool)
         enemy_dones = np.zeros((self.n_enemies), dtype=bool)
 
+        # print("In environment: ", enemy_actions)
+
         agent_actions_int = [int(a) for a in agent_actions]
         enemy_actions_int = [int(a) for a in enemy_actions]
         
@@ -943,6 +947,7 @@ class StarCraft2Env(MultiAgentEnv):
             # Battle is over
             terminated = True
             self.battles_game += 1
+            self.enemy_battles_game += 1
             if game_end_code == 1 and not self.win_counted:
                 self.battles_won += 1
                 self.win_counted = True
@@ -970,6 +975,7 @@ class StarCraft2Env(MultiAgentEnv):
                 infos["episode_limit"] = True
                 enemy_infos["episode_limit"] = True
             self.battles_game += 1
+            self.enemy_battles_game += 1
             self.timeouts += 1
 
         for i in range(self.n_agents):
@@ -1498,6 +1504,8 @@ class StarCraft2Env(MultiAgentEnv):
                     self.death_tracker_ally[al_id] = 1
                     if not self.reward_only_positive:
                         delta_deaths -= self.reward_death_value * neg_scale
+                    delta_deaths_enemy += prev_health
+                    delta_enemy_enemy += prev_health
                     delta_ally += prev_health * neg_scale
                 else:
                     # still alive
@@ -1508,17 +1516,17 @@ class StarCraft2Env(MultiAgentEnv):
 
         for e_id, e_unit in self.enemies.items():
             if not self.death_tracker_enemy[e_id]:
+                # did not die so far (enemy)
                 prev_health = (
                     self.previous_enemy_units[e_id].health
                     + self.previous_enemy_units[e_id].shield
                 )
                 if e_unit.health == 0:
                     self.death_tracker_enemy[e_id] = 1
-                    delta_deaths += self.reward_death_value
-                    delta_enemy += prev_health
-                    
                     if not self.reward_only_positive:
                         delta_deaths_enemy -= self.reward_death_value * neg_scale
+                    delta_deaths += self.reward_death_value
+                    delta_enemy += prev_health
                     delta_ally_enemy += prev_health * neg_scale
                 else:
                     delta_enemy += prev_health - e_unit.health - e_unit.shield
@@ -3180,8 +3188,9 @@ class StarCraft2Env(MultiAgentEnv):
                 own_feats[ind + type_id] = 1
                 ind += self.unit_type_bits
 
-            if self.state_last_action:
+            if self.state_last_action: 
                 own_feats[ind:] = self.last_action_enemy[enemy_id]
+                
 
         state = np.concatenate((ally_feats.flatten(), 
                                 enemy_feats.flatten(),
@@ -4514,8 +4523,8 @@ class StarCraft2Env(MultiAgentEnv):
             all_agents_created = len(self.agents) == self.n_agents
             all_enemies_created = len(self.enemies) == self.n_enemies
             
-            # logging.info(f"Num Agents:  {len(self.agents)} == {len(ally_units)} step: {s}")
-            # logging.info(f"Num Enemies: {len(self.enemies)} == {len(enemy_units)} step: {s}")
+            # print(f"Num Agents:  {len(self.agents)} == {len(ally_units)} step: {s}")
+            # print(f"Num Enemies: {len(self.enemies)} == {len(enemy_units)} step: {s}")
 
             self._unit_types = [
                 unit.unit_type for unit in ally_units_sorted
@@ -4730,7 +4739,8 @@ class StarCraft2Env(MultiAgentEnv):
             "battles_won": self.battles_won,
             "battles_game": self.battles_game,
             "battles_draw": self.timeouts,
-            "win_rate": self.battles_won / self.battles_game,
+            "win_rate_agent": self.battles_won / self.battles_game,
+            "win_rate_enemy": self.enemy_battles_won/self.enemy_battles_game,
             "timeouts": self.timeouts,
             "restarts": self.force_restarts,
         }

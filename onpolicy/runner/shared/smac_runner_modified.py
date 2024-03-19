@@ -63,7 +63,7 @@ class SMACRunner(Runner):
                                 self.num_env_steps,
                                 int(total_num_steps / (end - start))))
 
-                if self.env_name == "StarCraft2" or self.env_name == "SMACv2" or self.env_name == "SMAC" or self.env_name == "StarCraft2v2":
+                if self.env_name in ("StarCraft2", "SMACv2", "SMAC", "StarCraft2v2", "StarCraft2v2_Random"):
                     battles_won = []
                     battles_game = []
                     incre_battles_won = []
@@ -93,7 +93,7 @@ class SMACRunner(Runner):
 
             # eval
             if episode % self.eval_interval == 0 and self.use_eval:
-                self.eval(total_num_steps)
+                self.eval_static(total_num_steps)
 
     def warmup(self):
         # reset env
@@ -159,7 +159,7 @@ class SMACRunner(Runner):
                 self.writter.add_scalars(k, {k: v}, total_num_steps)
     
     @torch.no_grad()
-    def eval(self, total_num_steps):
+    def eval_static(self, total_num_steps):
         eval_battles_won = 0
         eval_episode = 0
 

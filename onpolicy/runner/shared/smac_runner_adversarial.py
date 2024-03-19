@@ -19,18 +19,36 @@ class SMACRunner(Runner):
         self.jsrl_guide_windows = {}
         self.explore_policy_active = False
         self.multi_player = True
+        self.seed = config['all_args'].seed
+        self.opp1_policy = None
+        self.opp2_policy = None
         # self.num_enemies = config["num_enemies"]
         self.all_args.reward_speed = 1
-        share_observation_space = self.envs.share_observation_space[0] if self.use_centralized_V else self.envs.observation_space[0]
-        from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
-        self.opp_policy = Policy(self.all_args,
-                            self.envs.observation_space[0],
-                            share_observation_space,
-                            self.envs.action_space[0],
-                            device = self.device)
-        
-        self.opponent_dir = config["all_args"].opponent_dir
-        
+        if self.seed > 1:
+            share_observation_space = self.envs.share_observation_space[0] if self.use_centralized_V else self.envs.observation_space[0]
+            enemy_share_observation_space = self.envs.enemy_share_observation_space[0] if self.use_centralized_V else self.envs.enemy_observation_space[0]
+            from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
+            self.opp1_policy = Policy(self.all_args,
+                                self.envs.enemy_observation_space[0],
+                                enemy_share_observation_space,
+                                self.envs.enemy_action_space[0],
+                                device = self.device)
+            self.opp2_policy = Policy(self.all_args,
+                                self.envs.observation_space[0],
+                                share_observation_space,
+                                self.envs.action_space[0],
+                                device = self.device)
+            
+            self.opponent_dir = config["all_args"].opp_model_dir
+            
+            # load Opponents
+            print("Loading Opponents........")
+            print(str(self.opponent_dir))
+            policy_state_dict = torch.load(self.opponent_dir + 'actor2.pt')
+            self.opp1_policy.actor.load_state_dict(policy_state_dict)
+            policy_state_dict = torch.load(self.opponent_dir + 'actor1.pt')
+            self.opp2_policy.actor.load_state_dict(policy_state_dict)
+
         # load opponent model
         # print("restoring model.......")
         # print(str(self.opponent_dir))
@@ -100,7 +118,11 @@ class SMACRunner(Runner):
                 #     enemy_values, enemy_actions, enemy_action_log_probs, enemy_rnn_states, enemy_rnn_states_critic = self.collect_enemy(step)
                     # enemy_actions, enemy_rnn_states = self.collect_enemy(self.enemy_obs,self.enemy_rnn_states,self.buffer2.masks[step],self.available_enemy_actions)
                 # print("Environments:    ", self.envs)
-                obs, enemy_obs, agent_state, enemy_state, rewards, enemy_rewards, dones, enemy_dones, infos, enemy_infos, available_actions, available_enemy_actions = self.envs.step(actions,enemy_actions) if self.multi_player else self.envs.step(actions)
+                obs, enemy_obs, agent_state, enemy_state, rewards, enemy_rewards, \
+                dones, enemy_dones, infos, enemy_infos, available_actions, available_enemy_actions \
+                    = self.envs.step(actions,enemy_actions) if self.multi_player \
+                        else self.envs.step(actions)
+                    
                 if self.multi_player:
                     self.available_enemy_actions = available_enemy_actions.copy()
                     self.enemy_rnn_states = enemy_rnn_states.copy()
@@ -113,6 +135,25 @@ class SMACRunner(Runner):
                 #    self.guide_policy_last_rewards[0][0][0] = inf
 
                 for index, done in enumerate(dones):
+                    if done.all():
+                        if self.all_args.reward_speed and infos[index][0]['won']:
+                            max_reward = 1840 # Hardcoded from env
+                            scale_rate = 20 # Hardcoded from env.
+                            map_length = step - self.jsrl_guide_windows[index][1]
+                            upper_map_length_limit = 150
+                            norm_max = 30
+                            z1 = (map_length / upper_map_length_limit) * norm_max
+                            z1 = (z1 - norm_max) * -1 # invert reward to reward lower map_length
+                            speed_reward = z1 / (max_reward / scale_rate)
+                            rewards[index] += speed_reward
+
+                        self.jsrl_guide_windows[index][1] = step
+
+                        # If we haven't set the guide window yet, set it to the last frame of last attempt, that's our starting point.
+                        if self.jsrl_guide_windows[index][0] is inf:
+                            self.jsrl_guide_windows[index][0] = step
+
+                for index, done in enumerate(enemy_dones):
                     if done.all():
                         if self.all_args.reward_speed and infos[index][0]['won']:
                             max_reward = 1840 # Hardcoded from env
@@ -164,7 +205,7 @@ class SMACRunner(Runner):
                                 self.num_env_steps,
                                 int(total_num_steps / (end - start))))
 
-                if self.env_name in ("StarCraft2", "StarCraft2v2"):
+                if self.env_name in ("StarCraft2", "StarCraft2v2", "StarCraft2v2_Random"):
                     battles_won = []
                     battles_game = []
                     incre_battles_won = []
@@ -184,7 +225,7 @@ class SMACRunner(Runner):
                             enemy_incre_battles_game.append(info[0]['battles_game']-enemy_last_battles_game[i])
 
                     enemy_incre_win_rate = np.sum(enemy_incre_battles_won)/np.sum(enemy_incre_battles_game) if np.sum(enemy_incre_battles_game)>0 else 0.0
-                    print("incre win rate is {}.".format(enemy_incre_win_rate))
+                    print("enemy incre win rate is {}.".format(enemy_incre_win_rate))
                     if self.use_wandb:
                         wandb.log({"enemy_incre_win_rate": enemy_incre_win_rate}, step=total_num_steps)
                         # wandb.log({"enemy_guide_window": self.jsrl_guide_windows[0][0]}, step=total_num_steps)
@@ -201,7 +242,7 @@ class SMACRunner(Runner):
                             incre_battles_game.append(info[0]['battles_game']-last_battles_game[i])
 
                     incre_win_rate = np.sum(incre_battles_won)/np.sum(incre_battles_game) if np.sum(incre_battles_game)>0 else 0.0
-                    print("incre win rate is {}.".format(incre_win_rate))
+                    print("agent incre win rate is {}.".format(incre_win_rate))
                     if self.use_wandb:
                         wandb.log({"agent_incre_win_rate": incre_win_rate}, step=total_num_steps)
                         # wandb.log({"agent_guide_window": self.jsrl_guide_windows[0][0]}, step=total_num_steps)
@@ -211,8 +252,8 @@ class SMACRunner(Runner):
                     last_battles_game = battles_game
                     last_battles_won = battles_won
                     
-                    enemy_last_battles_game = battles_game
-                    enemy_last_battles_won = battles_won
+                    enemy_last_battles_game = enemy_battles_game
+                    enemy_last_battles_won = enemy_battles_won
 
                 agent_train_infos['dead_ratio'] = 1 - self.buffer1.active_masks.sum() / reduce(lambda x, y: x*y, list(self.buffer1.active_masks.shape)) 
                 enemy_train_infos['dead_ratio'] = 1 - self.buffer2.active_masks.sum() / reduce(lambda x, y: x*y, list(self.buffer2.active_masks.shape)) 
@@ -230,8 +271,12 @@ class SMACRunner(Runner):
             # eval
             if episode % self.eval_interval == 0 and self.use_eval:
                 # rewrite evaluate function to work with evaluating against benchmark model
-                self.eval(total_num_steps)
-                self.eval_envs.envs[0].save_replay()
+                if self.env_name == "StarCraft2v2_Random":
+                    self.eval_mp_random(total_num_steps)
+                    self.eval_envs.envs[0].save_replay()
+                else:
+                    self.eval_static(total_num_steps)
+                    self.eval_envs[0][0].save_replay()
 
             self.episodes_since_guide_window_reduction += 1
 
@@ -387,90 +432,273 @@ class SMACRunner(Runner):
                 self.writter.add_scalars(f"enemy_{k}", {f"enemy_{k}": v}, total_num_steps)
     
     @torch.no_grad()
-    def eval(self, total_num_steps):
-        eval_battles_won = 0
-        eval_episode = 0
+    def eval_mp_random(self, total_num_steps):        
+        trainers = [self.trainer1, self.trainer2]
+        teams = ["agent", "enemy"]
 
-        eval_episode_rewards = []
-        one_episode_rewards = []
-        eval_episode_healths = []
+        for trainer, team in zip(trainers, teams):
+            num_agents  = self.num_agents  if team == "agent" else self.num_enemies
+            num_enemies = self.num_enemies if team == "agent" else self.num_agents
+            modes = ("random", "bot") if self.seed > 1 else ("random")
+            for mode in modes:
+                eval_battles_won = 0
+                eval_episode = 0
 
-        eval_obs, eval_agent_state, eval_available_actions = self.eval_envs.reset()
+                eval_episode_rewards = []
+                one_episode_rewards = []
+                eval_episode_healths = []
+                
+                agent_obs, enemy_obs, agent_state, enemy_state, agent_available_actions, enemy_available_actions = self.eval_envs.reset()
 
-        eval_rnn_states = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
-        eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
+                eval_rnn_states = np.zeros((self.n_eval_rollout_threads, num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
+                eval_opp_rnn_states = np.zeros((self.n_eval_rollout_threads, num_enemies, self.recurrent_N, self.hidden_size), dtype=np.float32)
+                eval_masks = np.ones((self.n_eval_rollout_threads, num_agents, 1), dtype=np.float32)
+                eval_opp_masks = np.ones((self.n_eval_rollout_threads, num_enemies, 1), dtype=np.float32)
 
-        eval_env_infos = {'total_health_remaining': 0, 'eval_average_episode_rewards': 0}
 
-        while True:
-            self.trainer1.prep_rollout()
-            eval_actions, eval_rnn_states = \
-                self.trainer1.policy.act(np.concatenate(eval_obs),
-                                        np.concatenate(eval_rnn_states),
-                                        np.concatenate(eval_masks),
-                                        np.concatenate(eval_available_actions),
-                                        deterministic=True)
-            eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
-            eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
-            # print("EVAL ENVIRONMENT", self.eval_envs)
-            
-            # opp_rnn_states = self.collect_enemy(self.enemy_obs,opp_rnn_states,opp_masks)
+                eval_env_infos = {f'total_health_remaining_{team}': 0, f'eval_average_episode_rewards_{team}': 0}
                     
-            
-            
-            # Obser reward and next obs
-            previous_state = eval_agent_state
-            eval_obs, eval_agent_state, eval_rewards, eval_dones, \
-            eval_infos, eval_available_actions = self.eval_envs.step(eval_actions)
-            one_episode_rewards.append(eval_rewards)
+                        
+                while True:
+                    if team == "agent":
+                        eval_obs = agent_obs
+                        eval_state = agent_state
+                        eval_available_actions = agent_available_actions
+                        enemy_avail_actions = enemy_available_actions
+                        policy = self.opp1_policy
+                        eval_opp_obs = enemy_obs
+                        eval_opp_state = enemy_state
+                    elif team == "enemy":
+                        eval_obs = enemy_obs
+                        eval_state = enemy_state
+                        eval_available_actions = enemy_available_actions
+                        enemy_avail_actions = agent_available_actions
+                        policy = self.opp2_policy
+                        eval_opp_obs = agent_obs
+                        eval_opp_state = agent_state
+                        
+                    
+                    trainer.prep_rollout()
+                    eval_actions, eval_rnn_states = \
+                        trainer.policy.act(np.concatenate(eval_obs),
+                                                np.concatenate(eval_rnn_states),
+                                                np.concatenate(eval_masks),
+                                                np.concatenate(eval_available_actions),
+                                                deterministic=True)
+                    eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
+                    eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
+                    # print("EVAL ENVIRONMENT", self.eval_envs)
+                    
+                    # opp_rnn_states = self.collect_enemy(self.enemy_obs,opp_rnn_states,opp_masks)
+                            
+                    
+                    # Obser reward and next obs
+                    previous_state = eval_state
+                    previous_opp_state = eval_opp_state
+                    # eval_obs, eval_agent_state, eval_rewards, eval_dones, \
+                    # eval_infos, eval_available_actions = self.eval_envs.step(eval_actions)
+                    
+                    # Make random selection for enemy actions to perform against random agents
+                    if self.seed == 1 or mode == "random":
+                        enemy_actions = []
+                        for actions in enemy_avail_actions[0]:
+                            avail_actions_ind = np.nonzero(actions)[0]
+                            action = np.random.choice(avail_actions_ind)
+                            enemy_actions.append(action)
+                        #     print("Indices: ", avail_actions_ind)
+                        #     print("Action: ", action)
+                        enemy_actions = np.array(enemy_actions)
 
-            eval_dones_env = np.all(eval_dones, axis=1)
-
-            eval_rnn_states[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
-
-            eval_masks = np.ones((self.all_args.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
-            eval_masks[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
-
-            # Get relative health and shield values for units, this will only work with protoss?
-            featureCount = 22
-
-            for eval_i in range(self.n_eval_rollout_threads):
-                if eval_dones_env[eval_i]:
-                    eval_episode += 1
-
-                    total_relative_health = 0
-                    total_relative_shield = 0
-                    for agent in range(self.num_agents):
-                        healthIdx = agent * featureCount
-                        shieldIdx = healthIdx + 4
-                        total_relative_health += previous_state[eval_i][agent][healthIdx]
-                        total_relative_shield += previous_state[eval_i][agent][shieldIdx]
-
-                    if eval_infos[eval_i][0]['won']:
-                        eval_env_infos['total_health_remaining'] = (total_relative_shield + total_relative_health) / (self.num_agents * 2)
+                        # print("Enemy_actions: ", enemy_actions)
+                        # print("Eval actions: ", eval_actions)
+                        # if type(enemy_actions) == tensor
+                        enemy_actions = np.array(np.split(enemy_actions, self.n_eval_rollout_threads))
                     else:
-                        eval_env_infos['total_health_remaining'] = 0 
+                        enemy_actions, eval_opp_rnn_states = \
+                            policy.act(np.concatenate(eval_opp_obs),
+                                                np.concatenate(eval_opp_rnn_states),
+                                                np.concatenate(eval_opp_masks),
+                                                np.concatenate(enemy_avail_actions),
+                                                deterministic=True)
+                        enemy_actions = np.array(np.split(_t2n(enemy_actions), self.n_eval_rollout_threads))
+                        eval_opp_rnn_states = np.array(np.split(_t2n(eval_opp_rnn_states), self.n_eval_rollout_threads))
+                        
+                    # Just to check and print any actions that may be invalid
+                    if torch.is_tensor(enemy_actions):
+                        print(enemy_actions)
+                    
+                    agent_obs, enemy_obs, agent_state, enemy_state, agent_rewards, enemy_rewards, \
+                    agent_dones, enemy_dones, agent_infos, enemy_infos, agent_available_actions, enemy_available_actions \
+                        = self.eval_envs.step(eval_actions, enemy_actions) if team == "agent"\
+                            else self.eval_envs.step(enemy_actions, eval_actions)
+                    
+                    
+                    if team == "agent":
+                        # eval_state = agent_state
+                        eval_infos = agent_infos
+                        eval_rewards = agent_rewards
+                        eval_dones = agent_dones
+                        eval_opp_dones = enemy_dones
+                    else:
+                        # eval_state = enemy_state
+                        eval_infos = enemy_infos
+                        eval_rewards = enemy_rewards
+                        eval_dones = enemy_dones
+                        eval_opp_dones = agent_dones
+                        
+                    
+                    one_episode_rewards.append(eval_rewards)
+
+                    eval_dones_env = np.all(eval_dones, axis=1)
+                    eval_opp_dones_env = np.all(eval_opp_dones, axis=1)
+
+                    eval_rnn_states[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
+
+                    eval_masks = np.ones((self.all_args.n_eval_rollout_threads, num_agents, 1), dtype=np.float32)
+                    eval_masks[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), num_agents, 1), dtype=np.float32)
+
+                    eval_opp_masks = np.ones((self.n_eval_rollout_threads, num_enemies, 1), dtype=np.float32)
+                    eval_opp_masks[eval_opp_dones_env == True] = np.zeros(((eval_opp_dones_env == True).sum(), num_enemies, 1), dtype=np.float32)
+
+                    # Get relative health and shield values for units, this will only work with protoss?
+                    featureCount = 22
+
+                    for eval_i in range(self.n_eval_rollout_threads):
+                        if eval_dones_env[eval_i]:
+                            eval_episode += 1
+
+                            total_relative_health = 0
+                            total_relative_shield = 0
+                            for agent in range(num_agents):
+                                healthIdx = agent * featureCount
+                                shieldIdx = healthIdx + 4
+                                total_relative_health += previous_state[eval_i][agent][healthIdx]
+                                total_relative_shield += previous_state[eval_i][agent][shieldIdx]
+
+                            if eval_infos[eval_i][0]['won']:
+                                eval_env_infos[f'total_health_remaining_{team}'] = (total_relative_shield + total_relative_health) / (num_agents * 2)
+                            else:
+                                eval_env_infos[f'total_health_remaining_{team}'] = 0 
 
 
-                    eval_episode_healths.append(eval_env_infos['total_health_remaining'])
-                    eval_episode_rewards.append(np.sum(one_episode_rewards, axis=0))
-                    one_episode_rewards = []
-                    if eval_infos[eval_i][0]['won']:
-                        eval_battles_won += 1
+                            eval_episode_healths.append(eval_env_infos[f'total_health_remaining_{team}'])
+                            eval_episode_rewards.append(np.sum(one_episode_rewards, axis=0))
+                            one_episode_rewards = []
+                            if eval_infos[eval_i][0]['won']:
+                                eval_battles_won += 1
 
-            if eval_episode >= self.all_args.eval_episodes:
-                eval_episode_rewards = np.array(eval_episode_rewards)
-                eval_episode_healths = np.array(eval_episode_healths)
-                eval_env_infos['eval_average_episode_rewards'] = eval_episode_rewards
-                eval_env_infos['total_health_remaining'] = eval_episode_healths
-        
-                self.log_env(eval_env_infos, total_num_steps)
-                eval_win_rate = eval_battles_won/eval_episode
-                print("eval win rate is {}.".format(eval_win_rate))
+                    if eval_episode >= self.all_args.eval_episodes:
+                        eval_episode_rewards = np.array(eval_episode_rewards)
+                        eval_episode_healths = np.array(eval_episode_healths)
+                        eval_env_infos[f'eval_average_episode_rewards_{team}'] = eval_episode_rewards
+                        eval_env_infos[f'total_health_remaining_{team}'] = eval_episode_healths
+                
+                        self.log_env(eval_env_infos, total_num_steps)
+                        eval_win_rate = eval_battles_won/eval_episode
+                        print("{} {} eval win rate is {}.".format(team, mode, eval_win_rate))
 
-                if self.use_wandb:
-                    wandb.log({"eval_win_rate": eval_win_rate}, step=total_num_steps)
-                    wandb.log({"total_health_remaining": eval_episode_healths.mean()}, step=total_num_steps)
-                else:
-                    self.writter.add_scalars("eval_win_rate", {"eval_win_rate": eval_win_rate}, total_num_steps)
-                break
+                        if self.use_wandb:
+                            wandb.log({f"{mode}_eval_win_rate_{team}": eval_win_rate}, step=total_num_steps)
+                            wandb.log({f"total_health_remaining_{team}": eval_episode_healths.mean()}, step=total_num_steps)
+                        else:
+                            self.writter.add_scalars(f"eval_win_rate_{team}", {f"eval_win_rate_{team}": eval_win_rate}, total_num_steps)
+                        break
+                
+                # break
+
+    @torch.no_grad()
+    def eval_static(self, total_num_steps):
+        # TODO: Edit this method to accomodate for two different configurations per side, currently only allows identical configurations
+        trainers = [self.trainer1, self.trainer2]
+        teams = ["agent", "enemy"]
+
+        for trainer, team, eval_env in zip(trainers, teams, self.eval_envs):
+            num_agents = self.num_agents if team == "agent" else self.num_enemies
+            eval_battles_won = 0
+            eval_episode = 0
+
+            eval_episode_rewards = []
+            one_episode_rewards = []
+            eval_episode_healths = []
+
+            eval_obs, eval_agent_state, eval_available_actions = eval_env.reset()
+
+            eval_rnn_states = np.zeros((self.n_eval_rollout_threads, num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
+            eval_masks = np.ones((self.n_eval_rollout_threads, num_agents, 1), dtype=np.float32)
+
+            print(np.shape(eval_obs), np.shape(eval_rnn_states), np.shape(eval_masks))
+            eval_env_infos = {f'total_health_remaining_{team}': 0, f'eval_average_episode_rewards_{team}': 0}
+            while True:
+                    
+                trainer.prep_rollout()
+                eval_actions, eval_rnn_states = \
+                    trainer.policy.act(np.concatenate(eval_obs),
+                                            np.concatenate(eval_rnn_states),
+                                            np.concatenate(eval_masks),
+                                            np.concatenate(eval_available_actions),
+                                            deterministic=True)
+                eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
+                eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
+                # print("EVAL ENVIRONMENT", eval_env)
+                
+                # opp_rnn_states = self.collect_enemy(self.enemy_obs,opp_rnn_states,opp_masks)
+                        
+                
+                # Obser reward and next obs
+                previous_state = eval_agent_state
+                eval_obs, eval_agent_state, eval_rewards, eval_dones, \
+                eval_infos, eval_available_actions = eval_env.step(eval_actions)
+                one_episode_rewards.append(eval_rewards)
+
+                eval_dones_env = np.all(eval_dones, axis=1)
+
+                eval_rnn_states[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
+
+                eval_masks = np.ones((self.all_args.n_eval_rollout_threads, num_agents, 1), dtype=np.float32)
+                eval_masks[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), num_agents, 1), dtype=np.float32)
+
+                # Get relative health and shield values for units, this will only work with protoss?
+                featureCount = 22
+
+                for eval_i in range(self.n_eval_rollout_threads):
+                    if eval_dones_env[eval_i]:
+                        eval_episode += 1
+
+                        total_relative_health = 0
+                        total_relative_shield = 0
+                        for agent in range(num_agents):
+                            healthIdx = agent * featureCount
+                            shieldIdx = healthIdx + 4
+                            total_relative_health += previous_state[eval_i][agent][healthIdx]
+                            total_relative_shield += previous_state[eval_i][agent][shieldIdx]
+
+                        if eval_infos[eval_i][0]['won']:
+                            eval_env_infos[f'total_health_remaining_{team}'] = (total_relative_shield + total_relative_health) / (num_agents * 2)
+                        else:
+                            eval_env_infos[f'total_health_remaining_{team}'] = 0 
+
+
+                        eval_episode_healths.append(eval_env_infos[f'total_health_remaining_{team}'])
+                        eval_episode_rewards.append(np.sum(one_episode_rewards, axis=0))
+                        one_episode_rewards = []
+                        if eval_infos[eval_i][0]['won']:
+                            eval_battles_won += 1
+
+                if eval_episode >= self.all_args.eval_episodes:
+                    eval_episode_rewards = np.array(eval_episode_rewards)
+                    eval_episode_healths = np.array(eval_episode_healths)
+                    eval_env_infos[f'eval_average_episode_rewards_{team}'] = eval_episode_rewards
+                    eval_env_infos[f'total_health_remaining_{team}'] = eval_episode_healths
+            
+                    self.log_env(eval_env_infos, total_num_steps)
+                    eval_win_rate = eval_battles_won/eval_episode
+                    print("eval win rate is {}.".format(eval_win_rate))
+
+                    if self.use_wandb:
+                        wandb.log({f"eval_win_rate_{team}": eval_win_rate}, step=total_num_steps)
+                        wandb.log({f"total_health_remaining_{team}": eval_episode_healths.mean()}, step=total_num_steps)
+                    else:
+                        self.writter.add_scalars(f"eval_win_rate_{team}", {f"eval_win_rate_{team}": eval_win_rate}, total_num_steps)
+                    break
+                
+                # break

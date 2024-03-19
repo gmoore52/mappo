@@ -82,6 +82,14 @@ class Runner(object):
                             enemy_share_observation_space,
                             self.envs.enemy_action_space[0],
                             device = self.device)
+        
+        print(self.envs.observation_space[0],
+                            share_observation_space,
+                            self.envs.action_space[0],
+                            "enemy",
+                            self.envs.enemy_observation_space[0],
+                            enemy_share_observation_space,
+                            self.envs.enemy_action_space[0])
     
 
         if self.model_dir is not None:

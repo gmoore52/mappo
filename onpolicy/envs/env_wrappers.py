@@ -467,9 +467,25 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
                     ob, e_ob, s_ob, es_ob, available_actions, e_avail_actions = env.reset()
 
             remote.send((ob, s_ob, reward, done, info, available_actions))
+        elif cmd == 'step_multi':
+            ob, opp_ob, ag_st, en_st, rew, en_rew, done, en_done, \
+                info, en_info, av_act, av_en_act = env.step(data[0], data[1])
+            
+            if 'bool' in done.__class__.__name__:
+                if done:
+                    ob, e_ob, ag_st, en_st, av_act, av_en_act = env.reset()
+            else:
+                if np.all(done):
+                    ob, e_ob, ag_st, en_st, av_act, av_en_act = env.reset()
+
+            remote.send((ob, opp_ob, ag_st, en_st, rew, en_rew, done, en_done,
+                info, en_info, av_act, av_en_act))
         elif cmd == 'reset':
             ob, e_ob, s_ob, es_ob, available_actions, e_avail_actions = env.reset()
             remote.send((ob, e_ob, s_ob, es_ob, available_actions, e_avail_actions))
+        elif cmd == 'reset_multi':
+            ob, en_ob, ag_st, en_st, av_act, av_en_act = env.reset()
+            remote.send((ob, en_ob, ag_st, en_st, av_act, av_en_act))
         elif cmd == 'reset_task':
             ob = env.reset_task()
             remote.send(ob)
@@ -486,6 +502,11 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
         elif cmd == 'get_spaces':
             remote.send(
                 (env.observation_space, env.share_observation_space, env.action_space))
+        elif cmd == 'get_spaces_multi':
+            remote.send((
+                env.observation_space, env.share_observation_space, env.action_space,
+                env.enemy_observation_space, env.enemy_share_observation_space, env.enemy_action_space
+            ))
         elif cmd == 'render_vulnerability':
             fr = env.render_vulnerability(data)
             remote.send((fr))
@@ -551,6 +572,85 @@ class ShareSubprocVecEnv(ShareVecEnv):
         self.closed = True
 
 
+class ShareMultiSubprocVecEnv(ShareMultiVecEnv):
+    def __init__(self, env_fns, spaces=None):
+        """
+        envs: list of gym environments to run in subprocesses
+        """
+        self.waiting = False
+        self.closed = False
+        nenvs = len(env_fns)
+        self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
+        self.ps = [Process(target=shareworker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
+                   for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
+        for p in self.ps:
+            p.daemon = True  # if the main process crashes, we should not cause things to hang
+            p.start()
+        for remote in self.work_remotes:
+            remote.close()
+        self.remotes[0].send(('get_spaces_multi', None))
+        observation_space, share_observation_space, action_space,\
+             enemy_observation_space, enemy_share_observation_space, enemy_action_space,  = self.remotes[0].recv(
+        )
+        ShareMultiVecEnv.__init__(self, len(env_fns), observation_space, enemy_observation_space, 
+                                  share_observation_space, enemy_share_observation_space,
+                                    action_space, enemy_action_space)
+
+    def step_async(self, actionsleft, actionsright):
+        for remote, action1, action2 in zip(self.remotes, actionsleft, actionsright):
+            remote.send(('step_multi', (action1, action2)))
+        self.waiting = True
+
+    def step_wait(self):
+        results = [remote.recv() for remote in self.remotes]
+        self.waiting = False
+        obs, opp_obs, agent_state, enemy_state, rews, e_rews, dones, e_dones, \
+        infos, e_infos, available_actions, avail_enemy_actions = map(
+            np.array, zip(*results))
+
+
+        # for (i, done) in enumerate(dones):
+        #     if 'bool' in done.__class__.__name__:
+        #         if done:
+        #             obs[i], opp_obs[i], agent_state[i], enemy_state[i], available_actions[i], avail_enemy_actions[i] = self.envs[i].reset()
+        #     else:
+        #         if np.all(done):
+        #             # print("state_size: ", np.shape(enemy_state))
+        #             obs[i], opp_obs[i], agent_state[i], enemy_state[i], available_actions[i], avail_enemy_actions[i] = self.envs[i].reset()
+        # self.actions = None
+
+        return np.stack(obs), np.stack(opp_obs), np.stack(agent_state), np.stack(enemy_state),\
+        np.stack(rews), np.stack(e_rews), np.stack(dones), np.stack(e_dones),\
+        np.stack(infos), np.stack(e_infos), np.stack(available_actions), np.stack(avail_enemy_actions)
+        # return np.stack(obs), np.stack(share_obs), np.stack(rews), np.stack(dones), infos, np.stack(available_actions)
+
+    def reset(self):
+        for remote in self.remotes:
+            remote.send(('reset_multi', None))
+        results = [remote.recv() for remote in self.remotes]
+        obs, enemy_obs, agent_state, enemy_state, \
+            available_actions, avail_enemy_actions = map(np.array, zip(*results))
+        return np.stack(obs), np.stack(enemy_obs), np.stack(agent_state), np.stack(enemy_state),\
+            np.stack(available_actions), np.stack(avail_enemy_actions)
+
+    def reset_task(self):
+        for remote in self.remotes:
+            remote.send(('reset_task', None))
+        return np.stack([remote.recv() for remote in self.remotes])
+
+    def close(self):
+        if self.closed:
+            return
+        if self.waiting:
+            for remote in self.remotes:
+                remote.recv()
+        for remote in self.remotes:
+            remote.send(('close', None))
+        for p in self.ps:
+            p.join()
+        self.closed = True
+
+
 def choosesimpleworker(remote, parent_remote, env_fn_wrapper):
     parent_remote.close()
     env = env_fn_wrapper.x()
@@ -559,9 +659,17 @@ def choosesimpleworker(remote, parent_remote, env_fn_wrapper):
         if cmd == 'step':
             ob, reward, done, info = env.step(data)
             remote.send((ob, reward, done, info))
+        elif cmd == 'step_multi':
+            ob, opp_ob, ag_st, en_st, rew, en_rew, done, en_done, \
+                info, en_info, av_act, av_en_act = env.step(data[0], data[1])
+            remote.send((ob, opp_ob, ag_st, en_st, rew, en_rew, done, en_done,
+                info, en_info, av_act, av_en_act))
         elif cmd == 'reset':
             ob = env.reset(data)
             remote.send((ob))
+        elif cmd == 'reset_multi':
+            ob, en_ob, ag_st, en_st, av_act, av_en_act = env.reset(data)
+            remote.send((ob, en_ob, ag_st, en_st, av_act, av_en_act))
         elif cmd == 'reset_task':
             ob = env.reset_task()
             remote.send(ob)
@@ -578,6 +686,11 @@ def choosesimpleworker(remote, parent_remote, env_fn_wrapper):
         elif cmd == 'get_spaces':
             remote.send(
                 (env.observation_space, env.share_observation_space, env.action_space))
+        elif cmd == 'get_spaces_multi':
+            remote.send((
+                env.observation_space, env.share_observation_space, env.action_space,
+                env.enemy_observation_space, env.enemy_share_observation_space, env.enemy_action_space
+            ))
         else:
             raise NotImplementedError
 

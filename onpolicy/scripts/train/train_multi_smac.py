@@ -2,6 +2,7 @@
 import sys
 import os
 import wandb
+import shutil
 import socket
 import setproctitle
 import numpy as np
@@ -14,7 +15,7 @@ from onpolicy.envs.starcraft2.SMACv2_modified import SMACv2 as SMACv2_Mod
 from onpolicy.envs.starcraft2.SMACv2 import SMACv2 as SMACv2_sp
 from onpolicy.envs.starcraft2.SMACv2_multiplayer import SMACv2 as SMACv2_mp
 from onpolicy.envs.starcraft2.smac_maps import get_map_params
-from onpolicy.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv, ShareMultiDummyVecEnv
+from onpolicy.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv, ShareMultiDummyVecEnv, ShareMultiSubprocVecEnv
 from absl import logging
 
 # logging.set_verbosity(logging.DEBUG)
@@ -24,21 +25,23 @@ from absl import logging
 
 def parse_smacv2_distribution(args):
     units = args.units.split('v')
+    map_size = 32
+    # map_size = 8+(args.seed*8)
     distribution_config = {
         "n_units": int(units[0]),
         "n_enemies": int(units[1]),
         "start_positions": {
             "dist_type": "surrounded_and_reflect",
             "p": 0.5,
-            "map_x": 32,
-            "map_y": 32,
+            "map_x": map_size,
+            "map_y": map_size,
         }
     }
     if 'protoss' in args.map_name:
         distribution_config['team_gen'] = {
             "dist_type": "weighted_teams",
-            "unit_types": ["stalker", "zealot", "colossus"],
-            "weights": [0.45, 0.45, 0.1],
+            "unit_types": ["stalker", "zealot"],#, "colossus"],
+            "weights": [0.4, 0.6],# 0.1],
             "observe": True,
         }
     elif 'zerg' in args.map_name:
@@ -51,8 +54,49 @@ def parse_smacv2_distribution(args):
     elif 'terran' in args.map_name:
         distribution_config['team_gen'] = {
             "dist_type": "weighted_teams",
-            "unit_types": ["marine", "marauder", "medivac"],
-            "weights": [0.45, 0.45, 0.1],
+            # "unit_types": ["marine", "marauder", "medivac"],
+            "unit_types": ["marine"],
+            "weights": [1],
+            # "weights": [0.45, 0.45, 0.1],
+            "observe": True,
+        } 
+    return distribution_config
+
+def parse_smacv2_distribution_reverse(args):
+    units = args.units.split('v')
+    # map_size = 8+(args.seed*8)
+    map_size = 32
+    distribution_config = {
+        "n_units": int(units[1]),
+        "n_enemies": int(units[0]),
+        "start_positions": {
+            "dist_type": "surrounded_and_reflect",
+            "p": 0.5,
+            "map_x": map_size,
+            "map_y": map_size,
+        }
+    }
+    if 'protoss' in args.map_name:
+        distribution_config['team_gen'] = {
+            "dist_type": "weighted_teams",
+            "unit_types": ["stalker", "zealot"],#, "colossus"],
+            "weights": [0.2, 0.8],#, 0.1],
+            "observe": True,
+        }
+    elif 'zerg' in args.map_name:
+        distribution_config['team_gen'] = {
+            "dist_type": "weighted_teams",
+            "unit_types": ["zergling", "baneling", "hydralisk"],
+            "weights": [0.45, 0.1, 0.45],
+            "observe": True,
+        } 
+    elif 'terran' in args.map_name:
+        distribution_config['team_gen'] = {
+            "dist_type": "weighted_teams",
+            # "unit_types": ["marine", "marauder", "medivac"],
+            "unit_types": ["marine"],
+            "weights": [1],
+            # "weights": [0.45, 0.45, 0.1],
             "observe": True,
         } 
     return distribution_config
@@ -62,7 +106,7 @@ def make_train_env(all_args):
         def init_env():
             if all_args.env_name == "StarCraft2":
                 env = StarCraft2EnvMPlayer(all_args)
-            elif all_args.env_name == "StarCraft2v2":
+            elif all_args.env_name in ("StarCraft2v2", "StarCraft2v2_Random"):
                 env = SMACv2_mp(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
             else:
                 print("Can not support the " + all_args.env_name + "environment.")
@@ -75,6 +119,9 @@ def make_train_env(all_args):
     if all_args.n_rollout_threads == 1:
         return ShareMultiDummyVecEnv([get_env_fn(0)])
     else:
+        if all_args.env_name in ("StarCraft2v2", "StarCraft2v2_Random"):
+            return ShareMultiSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+        
         return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
@@ -85,6 +132,21 @@ def make_eval_env(all_args):
                 env = StarCraft2Env(all_args)
             elif all_args.env_name == "StarCraft2v2":
                 env = SMACv2_Mod(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
+            elif all_args.env_name == "StarCraft2v2_Random":
+                env = SMACv2_mp(capability_config=parse_smacv2_distribution(all_args), map_name=all_args.map_name)
+            else:
+                print("Can not support the " + all_args.env_name + "environment.")
+                raise NotImplementedError
+            env.seed(all_args.seed * 50000 + rank * 10000)
+            return env
+
+        return init_env
+    
+    # Only defined for base SMACv2
+    def get_env_fn_reverse(rank):
+        def init_env(): # KEEP THIS ENVIRONMENT AS A BASE ENVIRONMENT AND THE TRAIN ONE AS A MULTIPLAYER ONE
+            if all_args.env_name == "StarCraft2v2":
+                env = SMACv2_Mod(capability_config=parse_smacv2_distribution_reverse(all_args), map_name=all_args.map_name)
             else:
                 print("Can not support the " + all_args.env_name + "environment.")
                 raise NotImplementedError
@@ -94,8 +156,19 @@ def make_eval_env(all_args):
         return init_env
 
     if all_args.n_eval_rollout_threads == 1:
-        return ShareDummyVecEnv([get_env_fn(0)])
+        if all_args.env_name == "StarCraft2v2_Random":
+            return ShareMultiDummyVecEnv([get_env_fn(0)])
+        elif all_args.env_name == "StarCraft2v2":
+            return ShareDummyVecEnv([get_env_fn(0)]), ShareDummyVecEnv([get_env_fn_reverse(0)])
+        else:
+            return ShareDummyVecEnv([get_env_fn(0)])
     else:
+        if all_args.env_name == "StarCraft2v2_Random":
+            return ShareMultiSubprocVecEnv([get_env_fn(0)])
+        elif all_args.env_name == "StarCraft2v2": #or \
+        # (all_args.env_name == "StarCraft2v2_Random" and all_args.seed == 3):
+            return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)]), \
+                ShareSubprocVecEnv([get_env_fn_reverse(i) for i in range(all_args.n_eval_rollout_threads)])
         return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
 
@@ -114,6 +187,7 @@ def parse_args(args, parser):
     parser.add_argument("--use_mustalive", action='store_false', default=True)
     parser.add_argument("--add_center_xy", action='store_false', default=True)
     parser.add_argument("--jumpstart_model_dir")
+    parser.add_argument("--opp_model_dir")
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -202,7 +276,7 @@ def main(args):
         num_agents = get_map_params(all_args.map_name)["n_agents"]
         num_enemies = get_map_params(all_args.map_name)["n_enemies"]
         print('smac map details  == ', get_map_params(all_args.map_name))
-    elif all_args.env_name == "SMACv2" or all_args.env_name == 'StarCraft2v2':
+    elif all_args.env_name in ('SMACv2', 'StarCraft2v2', 'StarCraft2v2_Random'):
         num_agents = parse_smacv2_distribution(all_args)['n_units']
         num_enemies = parse_smacv2_distribution(all_args)["n_enemies"]
         print('smac map details  == ', parse_smacv2_distribution(all_args))
@@ -219,6 +293,7 @@ def main(args):
         "device": device,
         "run_dir": run_dir
     }
+    print("RUN DIR: ", wandb.run.dir)
 
     # run experiments
     if all_args.share_policy:
@@ -239,6 +314,19 @@ def main(args):
     else:
         runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
         runner.writter.close()
+
+    # Put current run in a file for the next seed to use
+    target_dir = os.path.join(run_dir, f"{str(all_args.seed+1)}_bot/")
+    if not os.path.exists(target_dir):
+        os.mkdir(target_dir)
+        
+    for file in os.listdir(runner.save_dir):
+        origin = os.path.join(runner.save_dir, file)
+        outpath = os.path.join(target_dir, file)
+        shutil.copy(origin, outpath)
+    
+    outpath = os.path.join()    
+    shutil.copy(runner.save_dir, all_args.seed)
 
 
 if __name__ == "__main__":
