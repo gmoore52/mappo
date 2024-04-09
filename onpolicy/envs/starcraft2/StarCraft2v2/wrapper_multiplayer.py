@@ -20,6 +20,7 @@ class StarCraftCapabilityEnvWrapper(MultiAgentEnv):
         for env_key, config in self.distribution_config.items():
             if env_key == "n_units" or env_key == "n_enemies":
                 continue
+            print(env_key, config)
             config["env_key"] = env_key
             # add n_units key
             config["n_units"] = self.distribution_config["n_units"]

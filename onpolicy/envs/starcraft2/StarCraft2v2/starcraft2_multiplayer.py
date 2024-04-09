@@ -349,6 +349,12 @@ class StarCraft2Env(MultiAgentEnv):
         ):
             self.n_agent_actions = self.n_actions_no_attack + self.n_agents
             self.n_enemy_actions = self.n_actions_no_attack + self.n_enemies
+        elif map_params["map_type"] == "terran_v_zerg_gen":
+            self.n_agent_actions = self.n_actions_no_attack + self.n_agents
+            self.n_enemy_actions = self.n_actions_no_attack + self.n_agents
+        elif map_params["map_type"] == "protoss_v_terran_gen":
+            self.n_agent_actions = self.n_actions_no_attack + self.n_enemies
+            self.n_enemy_actions = self.n_actions_no_attack + self.n_enemies
         else:
             self.n_agent_actions = self.n_actions_no_attack + self.n_enemies
             self.n_enemy_actions = self.n_actions_no_attack + self.n_agents
@@ -370,6 +376,8 @@ class StarCraft2Env(MultiAgentEnv):
             self.agent_team = 1
             self.enemy_team = 2
     
+        # print("RACE: ", self._agent_race, self._bot_race)
+
         self.shield_bits_ally = 1 if self._agent_race == "P" else 0
         self.shield_bits_enemy = 1 if self._bot_race == "P" else 0
         # NOTE: The map_type, which is used to initialise the unit
@@ -653,6 +661,7 @@ class StarCraft2Env(MultiAgentEnv):
         ).get("item", None)
         self.mask_enemies = self.enemy_mask is not None
         ally_team = episode_config.get("team_gen", {}).get("ally_team", None)
+        # print(episode_config.get("team_gen", {}))
         enemy_team = episode_config.get("team_gen", {}).get("enemy_team", None)
         self.obs_enemies = np.zeros((self.n_enemies, self.n_agents))
         self.obs_agents = np.zeros((self.n_agents, self.n_enemies))
@@ -1155,7 +1164,7 @@ class StarCraft2Env(MultiAgentEnv):
             # attack/heal units that are in range
             target_id = action - self.n_actions_no_attack
             if (
-                self.map_type in ["MMM", "terran_gen"]
+                self.map_type in ["MMM", "terran_gen", "terran_v_zerg_gen"]
                 and unit.unit_type == self.medivac_id
             ):
                 target_unit = self.agents[target_id]
@@ -1304,7 +1313,7 @@ class StarCraft2Env(MultiAgentEnv):
             # attack/heal units that are in range
             target_id = action - self.n_actions_no_attack
             if (
-                self.map_type in ["MMM", "terran_gen"]
+                self.map_type in ["MMM", "terran_gen", "protoss_v_terran_gen"]
                 and unit.unit_type == self.medivac_id
             ):
                 target_unit = self.enemies[target_id]
@@ -2110,6 +2119,8 @@ class StarCraft2Env(MultiAgentEnv):
         ally_feats_dim = self.get_obs_ally_feats_size()
         own_feats_dim = self.get_obs_own_feats_size()
 
+        # print("dimensions agent: ", move_feats_dim, enemy_feats_dim, ally_feats_dim, own_feats_dim)
+
         move_feats = np.zeros(move_feats_dim, dtype=np.float32)
         enemy_feats = np.zeros(enemy_feats_dim, dtype=np.float32)
         ally_feats = np.zeros(ally_feats_dim, dtype=np.float32)
@@ -2366,6 +2377,8 @@ class StarCraft2Env(MultiAgentEnv):
         ally_feats_dim = self.get_obs_ally_feats_size_enemy()
         own_feats_dim = self.get_obs_own_feats_size_enemy()
 
+        # print("dimensions: ", move_feats_dim, enemy_feats_dim, ally_feats_dim, own_feats_dim)
+
         move_feats = np.zeros(move_feats_dim, dtype=np.float32)
         enemy_feats = np.zeros(enemy_feats_dim, dtype=np.float32)
         ally_feats = np.zeros(ally_feats_dim, dtype=np.float32)
@@ -2397,6 +2410,8 @@ class StarCraft2Env(MultiAgentEnv):
                 move_feats[ind:] = self.get_surrounding_height(unit)
 
             # Enemy features
+            # e_ids = []
+            # inds = []
             for e_id, e_unit in self.agents.items():
                 e_x = e_unit.pos.x
                 e_y = e_unit.pos.y
@@ -2447,6 +2462,7 @@ class StarCraft2Env(MultiAgentEnv):
                                 e_unit.shield / max_shield
                             )  # shield
                             ind += 1
+                        # inds.append(ind)
 
                     if self.unit_type_bits > 0 and show_enemy:
                         type_id = self.get_unit_type_id(e_unit, True)
@@ -2454,10 +2470,16 @@ class StarCraft2Env(MultiAgentEnv):
 
                 if self.obs_agents[e_id, enemy_id] == 0:
                     enemy_feats = np.zeros(enemy_feats_dim, dtype=np.float32)
+                # e_ids.append(e_id)
+                
+
+            # print("max e_id enemy feats ", max(e_ids))
+            # print("max ind enemy feats ", max(inds))
             # Ally features
             al_ids = [
                 al_id for al_id in range(self.n_enemies) if al_id != enemy_id
             ]
+            # inds = []
             for i, al_id in enumerate(al_ids):
                 al_unit = self.get_enemy_by_id(al_id)
                 al_x = al_unit.pos.x
@@ -2490,7 +2512,7 @@ class StarCraft2Env(MultiAgentEnv):
                             ind += 1
                         elif self.zero_pad_health:
                             ind += 1
-                        if self.shield_bits_ally > 0:
+                        if self.shield_bits_enemy > 0:
                             max_shield = self.unit_max_shield(al_unit)
                             ally_feats[i, ind] = (
                                 al_unit.shield / max_shield
@@ -2524,6 +2546,10 @@ class StarCraft2Env(MultiAgentEnv):
                     if self.obs_last_action:
                         ally_feats[i, ind:] = self.last_action[al_id]
 
+                    # inds.append(ind)
+
+                # print("max ind ally_feats ", max(inds))
+
             # Own features
             ind = 0
             if self.obs_own_health:
@@ -2532,7 +2558,7 @@ class StarCraft2Env(MultiAgentEnv):
                 else:
                     own_feats[ind] = self._compute_health_enemy(enemy_id, unit)
                 ind += 1
-                if self.shield_bits_ally > 0:
+                if self.shield_bits_enemy > 0:
                     max_shield = self.unit_max_shield(unit)
                     own_feats[ind] = unit.shield / max_shield
                     ind += 1
@@ -2556,6 +2582,8 @@ class StarCraft2Env(MultiAgentEnv):
                 type_id = self.get_unit_type_id(unit, False)
                 own_feats[ind + type_id] = 1
                 ind += self.unit_type_bits
+
+            # print("max ind own_feats ", ind)
 
         if self.obs_starcraft:
             agent_obs = np.concatenate(
@@ -2587,6 +2615,9 @@ class StarCraft2Env(MultiAgentEnv):
             logging.debug("Enemy feats {}".format(enemy_feats))
             logging.debug("Ally feats {}".format(ally_feats))
             logging.debug("Own feats {}".format(own_feats))
+            
+
+        # print("final obs enemy: ", move_feats, enemy_feats, ally_feats, own_feats)
 
         return agent_obs
 
@@ -3161,7 +3192,7 @@ class StarCraft2Env(MultiAgentEnv):
                         ind += self.unit_type_bits
 
                     if self.state_last_action:
-                        ally_feats[i, ind:] = self.last_action[al_id]
+                        ally_feats[i, ind:] = self.last_action_enemy[al_id]
 
             # Own features
             ind = 0
@@ -3173,7 +3204,7 @@ class StarCraft2Env(MultiAgentEnv):
             if self.obs_own_health:
                 own_feats[ind] = unit.health / unit.health_max
                 ind += 1
-                if self.shield_bits_ally > 0:
+                if self.shield_bits_enemy > 0:
                     max_shield = self.unit_max_shield(unit)
                     own_feats[ind] = unit.shield / max_shield
                     ind += 1
@@ -3301,7 +3332,7 @@ class StarCraft2Env(MultiAgentEnv):
                         ally_state[al_id, ind+1] = (al_y - center_y) / self.max_distance_y  # center Y
                         ind += 2
 
-                    if self.shield_bits_ally > 0:
+                    if self.shield_bits_enemy > 0:
                         max_shield = self.unit_max_shield(al_unit)
                         ally_state[al_id, ind] = (al_unit.shield / max_shield)  # shield
                         ind += 1
@@ -3340,7 +3371,7 @@ class StarCraft2Env(MultiAgentEnv):
                         enemy_state[e_id, ind+1] = (e_y - center_y) / self.max_distance_y  # center Y
                         ind += 2
                         
-                    if self.shield_bits_enemy > 0:
+                    if self.shield_bits_ally > 0:
                         max_shield = self.unit_max_shield(e_unit)
                         enemy_state[e_id, ind] = (e_unit.shield / max_shield)  # shield
                         ind += 1
@@ -3431,7 +3462,7 @@ class StarCraft2Env(MultiAgentEnv):
                 else:
                     ally_state[al_id, 0] = self._compute_health_agent(al_id, al_unit)
                 if (
-                    self.map_type in ["MMM", "terran_gen"]
+                    self.map_type in ["MMM", "terran_gen", "terran_v_zerg_gen"]
                     and al_unit.unit_type == self.medivac_id
                 ):
                     ally_state[al_id, 1] = al_unit.energy / max_cd  # energy
@@ -3606,6 +3637,21 @@ class StarCraft2Env(MultiAgentEnv):
             nf_al += self.n_agent_actions
 
         return self.n_agents - 1, nf_al + nf_cap
+    
+    # def get_obs_agent_feats_size_enemy(self):
+    #     """Returns the dimensions of the matrix containing ally features.
+    #     Size is n_allies x n_features.
+    #     """
+    #     nf_al = 4
+    #     nf_cap = self.get_obs_ally_capability_size()
+
+    #     if self.obs_all_health:
+    #         nf_al += 1 + self.shield_bits_ally
+
+    #     if self.obs_last_action:
+    #         nf_al += self.n_agent_actions
+
+    #     return nf_al + nf_cap, self.n_agents - 1
 
     def get_obs_ally_feats_size_enemy(self):
         """
@@ -3645,6 +3691,14 @@ class StarCraft2Env(MultiAgentEnv):
 
         if self.obs_last_action:
             own_feats += self.n_enemy_actions
+        # own_feats = self.get_cap_size()
+        # if self.obs_own_health and self.obs_starcraft:
+        #     own_feats += 1 + self.shield_bits_enemy
+        # if self.conic_fov and self.obs_starcraft:
+        #     own_feats += 2
+        # if self.obs_own_pos and self.obs_starcraft:
+        #     own_feats += 2
+
 
         return own_feats
 
@@ -3708,6 +3762,8 @@ class StarCraft2Env(MultiAgentEnv):
         ally_feats = n_allies * n_ally_feats
 
         all_feats = move_feats + enemy_feats + ally_feats + own_feats
+        # print("all_feats agemt: ", all_feats, move_feats, enemy_feats, ally_feats, own_feats)
+
 
         agent_id_feats = 0
         timestep_feats = 0
@@ -3730,13 +3786,14 @@ class StarCraft2Env(MultiAgentEnv):
         n_enemies, n_enemy_feats = self.get_obs_ally_feats_size()
         n_allies, n_ally_feats = self.get_obs_enemy_feats_size()
 
-        enemy_feats = n_enemies * n_enemy_feats
+        enemy_feats = self.n_agents * (n_enemy_feats+1)
         ally_feats = n_allies * n_ally_feats
 
         all_feats = move_feats + enemy_feats + ally_feats + own_feats
 
         agent_id_feats = 0
         timestep_feats = 0
+        print("all_feats: ", all_feats, move_feats, n_enemy_feats, enemy_feats, ally_feats, own_feats)
 
         if self.obs_agent_id:
             agent_id_feats = self.n_enemies
@@ -3745,6 +3802,8 @@ class StarCraft2Env(MultiAgentEnv):
         if self.obs_timestep_number:
             timestep_feats = 1
             all_feats += timestep_feats
+
+        # print("all_feats added: ", all_feats)
 
         return [all_feats * self.stacked_frames if self.use_stacked_frames 
                 else all_feats, [n_allies, n_ally_feats], [n_enemies, n_enemy_feats], 
@@ -3979,6 +4038,7 @@ class StarCraft2Env(MultiAgentEnv):
             if unit.unit_type in (self.colossus_id, Protoss.Colossus):
                 return 2
             raise AttributeError()
+        
         if self.map_type == "terran_gen":
             if unit.unit_type in (self.marine_id, Terran.Marine):
                 return 0
@@ -3994,6 +4054,51 @@ class StarCraft2Env(MultiAgentEnv):
             if unit.unit_type in (self.hydralisk_id, Zerg.Hydralisk):
                 return 1
             if unit.unit_type in (self.baneling_id, Zerg.Baneling):
+                return 2
+            raise AttributeError()
+        
+        if self.map_type == "protoss_v_terran_gen":
+            if unit.unit_type in (self.stalker_id, Protoss.Stalker):
+                return 0
+            if unit.unit_type in (self.zealot_id, Protoss.Zealot):
+                return 1
+            if unit.unit_type in (self.colossus_id, Protoss.Colossus):
+                return 2
+            if unit.unit_type in (self.marine_id, Terran.Marine):
+                return 0
+            if unit.unit_type in (self.marauder_id, Terran.Marauder):
+                return 1
+            if unit.unit_type in (self.medivac_id, Terran.Medivac):
+                return 2
+            raise AttributeError()
+        
+        if self.map_type == "terran_v_zerg_gen":
+            if unit.unit_type in (self.marine_id, Terran.Marine):
+                return 0
+            if unit.unit_type in (self.marauder_id, Terran.Marauder):
+                return 1
+            if unit.unit_type in (self.medivac_id, Terran.Medivac):
+                return 2
+            if unit.unit_type in (self.zergling_id, Zerg.Zergling):
+                return 0
+            if unit.unit_type in (self.hydralisk_id, Zerg.Hydralisk):
+                return 1
+            if unit.unit_type in (self.baneling_id, Zerg.Baneling):
+                return 2
+            raise AttributeError()
+
+        if self.map_type == "zerg_v_protoss_gen":
+            if unit.unit_type in (self.zergling_id, Zerg.Zergling):
+                return 0
+            if unit.unit_type in (self.hydralisk_id, Zerg.Hydralisk):
+                return 1
+            if unit.unit_type in (self.baneling_id, Zerg.Baneling):
+                return 2
+            if unit.unit_type in (self.stalker_id, Protoss.Stalker):
+                return 0
+            if unit.unit_type in (self.zealot_id, Protoss.Zealot):
+                return 1
+            if unit.unit_type in (self.colossus_id, Protoss.Colossus):
                 return 2
             raise AttributeError()
 
@@ -4057,7 +4162,7 @@ class StarCraft2Env(MultiAgentEnv):
 
             target_items = self.enemies.items()
             if (
-                self.map_type in ("MMM", "terran_gen")
+                self.map_type in ("MMM", "terran_gen", "terran_v_zerg_gen")
                 and unit.unit_type == self.medivac_id
             ):
                 # Medivacs cannot heal themselves or other flying units
@@ -4122,7 +4227,7 @@ class StarCraft2Env(MultiAgentEnv):
 
             target_items = self.agents.items()
             if (
-                self.map_type in ("MMM", "terran_gen")
+                self.map_type in ("MMM", "terran_gen", "protoss_v_terran_gen")
                 and unit.unit_type == self.medivac_id
             ):
                 # Medivacs cannot heal themselves or other flying units
@@ -4217,7 +4322,7 @@ class StarCraft2Env(MultiAgentEnv):
 
             target_items = self.enemies.items()
             if (
-                self.map_type in ("MMM", "terran_gen")
+                self.map_type in ("MMM", "terran_gen", "terran_v_zerg_gen")
                 and unit.unit_type == self.medivac_id
             ):
                 # Medivacs cannot heal themselves or other flying units
@@ -4279,7 +4384,7 @@ class StarCraft2Env(MultiAgentEnv):
 
             target_items = self.agents.items()
             if (
-                self.map_type in ("MMM", "terran_gen")
+                self.map_type in ("MMM", "terran_gen", "protoss_v_terran_gen")
                 and unit.unit_type == self.medivac_id
             ):
                 # Medivacs cannot heal themselves or other flying units
@@ -4334,7 +4439,7 @@ class StarCraft2Env(MultiAgentEnv):
 
     def render(self, mode="human"):
         if self.renderer is None:
-            from smacv2.env.starcraft2.render import StarCraft2Renderer
+            from .render import StarCraft2Renderer
 
             self.renderer = StarCraft2Renderer(self, mode)
         assert (
@@ -4704,7 +4809,7 @@ class StarCraft2Env(MultiAgentEnv):
 
     def only_medivac_left(self, ally):
         """Check if only Medivac units are left."""
-        if self.map_type != "MMM" and self.map_type != "terran_gen":
+        if self.map_type not in ("MMM", "terran_gen", "terran_v_zerg_gen", "protoss_v_terran_gen"):
             return False
 
         if ally:

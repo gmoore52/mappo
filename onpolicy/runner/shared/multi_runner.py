@@ -107,7 +107,7 @@ class Runner(object):
                                         self.envs.action_space[0])
         
         # buffer for enemy side
-        # print("obs space: ", np.shape(enemy_share_observation_space), enemy_share_observation_space)
+        # print("obs space: ", np.shape(self.envs.enemy_action_space[0]), self.envs.enemy_action_space[0])
         # print("obs a space: ", share_observation_space, np.shape(self.buffer1.share_obs))
         self.buffer2 = SharedReplayBuffer(self.all_args,
                                         self.num_enemies,

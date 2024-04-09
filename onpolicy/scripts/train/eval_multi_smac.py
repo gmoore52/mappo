@@ -40,10 +40,8 @@ def parse_smacv2_distribution(args):
     if 'protoss' in args.map_name:
         distribution_config['team_gen'] = {
             "dist_type": "weighted_teams",
-            "ally_unit_types": ["stalker", "zealot", "colossus"],#, "colossus"],
-            "ally_weights": [0.36, 0.46, 0.18],# 0.1],
-            "enemy_unit_types": ["marine", "medivac", "marauder"],
-            "enemy_weights": [0.4, 0.2, 0.4],
+            "unit_types": ["stalker", "zealot"],#, "colossus"],
+            "weights": [0.4, 0.6],# 0.1],
             "observe": True,
         }
     elif 'zerg' in args.map_name:
@@ -81,10 +79,8 @@ def parse_smacv2_distribution_reverse(args):
     if 'protoss' in args.map_name:
         distribution_config['team_gen'] = {
             "dist_type": "weighted_teams",
-            "ally_unit_types": ["stalker", "zealot"],#, "colossus"],
-            "ally_weights": [0.2, 0.8],#, 0.1],
-            "enemy_unit_types": ["marine", "medivac"],
-            "enemy_weights": [0.9, 0.1],
+            "unit_types": ["stalker", "zealot"],#, "colossus"],
+            "weights": [0.2, 0.8],#, 0.1],
             "observe": True,
         }
     elif 'zerg' in args.map_name:
@@ -301,7 +297,7 @@ def main(args):
 
     # run experiments
     if all_args.share_policy:
-        from onpolicy.runner.shared.smac_runner_adversarial import SMACRunner as Runner
+        from onpolicy.runner.shared.smac_runner_adversarial_eval import SMACRunner as Runner
     else:
         from onpolicy.runner.separated.smac_runner import SMACRunner as Runner
 

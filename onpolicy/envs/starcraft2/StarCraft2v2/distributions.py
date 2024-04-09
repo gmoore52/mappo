@@ -116,38 +116,44 @@ register_distribution("all_teams", AllTeamsDistribution)
 class WeightedTeamsDistribution(Distribution):
     def __init__(self, config):
         self.config = config
-        self.units = np.array(config["unit_types"])
+        # self.units = np.array(config["unit_types"])
+        self.ally_units = np.array(config["ally_unit_types"])
+        self.enemy_units = np.array(config["enemy_unit_types"])
         self.n_units = config["n_units"]
         self.n_enemies = config["n_enemies"]
         assert (
             self.n_enemies >= self.n_units
         ), "Only handle larger number of enemies than allies"
-        self.weights = np.array(config["weights"])
+        self.ally_weights = np.array(config["ally_weights"])
+        self.enemy_weights = np.array(config["enemy_weights"])
         # unit types that cannot make up the whole team
         self.exceptions = config.get("exception_unit_types", set())
         self.rng = default_rng()
         self.env_key = config["env_key"]
 
-    def _gen_team(self, n_units: int, use_exceptions: bool):
+    def _gen_team(self, n_units: int, use_exceptions: bool, ally: bool):
         team = []
+        units_list = self.ally_units if ally else self.enemy_units
+        weights = self.ally_weights if ally else self.enemy_weights
         while not team or (
             all(member in self.exceptions for member in team)
             and use_exceptions
         ):
             team = list(
-                self.rng.choice(self.units, size=(n_units,), p=self.weights)
+                self.rng.choice(units_list, size=(n_units,), p=weights)
             )
             shuffle(team)
         return team
 
     def generate(self) -> Dict[str, Dict[str, Any]]:
-        team = self._gen_team(self.n_units, use_exceptions=True)
-        enemy_team = team.copy()
-        if self.n_enemies > self.n_units:
-            extra_enemies = self._gen_team(
-                self.n_enemies - self.n_units, use_exceptions=True
-            )
-            enemy_team.extend(extra_enemies)
+        team = self._gen_team(self.n_units, use_exceptions=True, ally=True)
+        # enemy_team = team.copy()
+        # if self.n_enemies > self.n_units:
+        #     extra_enemies = self._gen_team(
+        #         self.n_enemies - self.n_units, use_exceptions=True
+        #     )
+        #     enemy_team.extend(extra_enemies)
+        enemy_team = self._gen_team(self.n_enemies, use_exceptions=True, ally=False)
 
         return {
             self.env_key: {

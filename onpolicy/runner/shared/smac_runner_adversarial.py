@@ -439,7 +439,7 @@ class SMACRunner(Runner):
         for trainer, team in zip(trainers, teams):
             num_agents  = self.num_agents  if team == "agent" else self.num_enemies
             num_enemies = self.num_enemies if team == "agent" else self.num_agents
-            modes = ("random", "bot") if self.seed > 1 else ("random")
+            modes = ("random", "bot") if self.seed > 1 else (["random"])
             for mode in modes:
                 eval_battles_won = 0
                 eval_episode = 0
